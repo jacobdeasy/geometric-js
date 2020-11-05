@@ -24,3 +24,14 @@ In particular:
 - `alpha_change.ipynb` - showcases experiments that investigate the influence of \alpha 
 - `gaussian_example.ipynb` - provides the examples given in Figure1 in the main text.
 - `comparison.py` - provides the examples given in Figure2 in the main text.
+
+## Citation
+For attribution in academic contexts, please cite this work as
+```
+@inproceedings{deasy2020_gjs,
+  title={Constraining Variational Inference with Geometric Jensen-Shannon Divergence}
+  author={Jacob Deasy and Nikola Simidjievski and Pietro Li{\`o}},
+  booktitle = {Advances in Neural Information Processing Systems},
+  year={2020}
+}
+```
