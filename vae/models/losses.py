@@ -710,7 +710,7 @@ def _dual_gjs_normal_loss(mean, logvar, a=0.5, storer=None):
     mean_a, var_a = _get_mu_var(mean, var, mean_0, var_0, a=a, storer=storer)
     # mean_a, var_a = _get_mu_var(mean, var, mean_0, var_0, a=1-a, storer=storer)  # the `1-a` here is IMPORTANT!!!
 
-    kl_1 = _kl_normal_loss(mean_a, var_a, mean, var, term=1, storer=storer)
+    kl_1 = _kl_normal_loss(mean_a, var_a, mean, var, term=1, storer=storer)  # dual part is here
     kl_2 = _kl_normal_loss(mean_a, var_a, mean_0, var_0, term=2, storer=storer)
 
     total_dgjs = (1 - a) * kl_1 + a * kl_2

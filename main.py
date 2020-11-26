@@ -53,10 +53,6 @@ def parse_arguments(args_to_parse):
     training.add_argument('-d', '--dataset',
                           default='dsprites', choices=DATASETS,
                           help="Path to training data.")
-    training.add_argument('--noise',
-                          type=float, default=0.0,
-                          help='Standard deviation of noise to add to '
-                               'normalised MNIST in NoisyMNIST dataset.')
     training.add_argument('-e', '--epochs',
                           type=int, default=30,
                           help='Maximum number of epochs to run for.')
@@ -220,7 +216,6 @@ def main(args):
 
         test_loader = get_dataloaders(metadata["dataset"],
                                       train=False,
-                                      noise=args.noise,
                                       batch_size=128,
                                       logger=logger)
         loss_f = get_loss_f(args.loss,
@@ -239,7 +234,6 @@ def main(args):
         # Train set also
         test_loader = get_dataloaders(metadata["dataset"],
                                       train=True,
-                                      noise=args.noise,
                                       batch_size=128,
                                       logger=logger)
         loss_f = get_loss_f(args.loss,
