@@ -11,8 +11,8 @@ from vae.utils.math import (log_density_gaussian, log_importance_weight_matrix,
                             matrix_log_density_gaussian)
 
 
-LOSSES = ["VAE", "KL", "GJS", "dGJS", "MMD", "betaH", "betaB", "factor",
-          "btcvae"]
+LOSSES = ["VAE", "KL", "fwdKL", "GJS", "dGJS", "MMD", "betaH", "betaB",
+          "factor", "btcvae"]
 RECON_DIST = ["bernoulli", "laplace", "gaussian"]
 
 
@@ -25,14 +25,20 @@ def get_loss_f(loss_name, **kwargs_parse):
         return BetaHLoss(beta=0, **kwargs_all)
     elif loss_name == "KL":
         return BetaHLoss(beta=1, **kwargs_all)
+    elif loss_name == "fwdKL":
+        return BetaHLoss(beta=1, **kwargs_all)
     elif loss_name == "GJS":
         return GeometricJSLoss(alpha=kwargs_parse["GJS_A"],
                                beta=kwargs_parse["GJS_B"],
+                               dual=False,
+                               invert_alpha=kwargs_parse["GJS_invA"],
                                **kwargs_all)
     elif loss_name == "dGJS":
-        return DualGeometricJSLoss(alpha=kwargs_parse["GJS_A"],
-                                   beta=kwargs_parse["GJS_B"],
-                                   **kwargs_all)
+        return GeometricJSLoss(alpha=kwargs_parse["GJS_A"],
+                               beta=kwargs_parse["GJS_B"],
+                               dual=True,
+                               invert_alpha=kwargs_parse["GJS_invA"],
+                               **kwargs_all)
     elif loss_name == "MMD":
         return MMDLoss(beta=kwargs_parse["MMD_B"],
                        **kwargs_all)
@@ -59,7 +65,7 @@ def get_loss_f(loss_name, **kwargs_parse):
                           **kwargs_all)
     else:
         assert loss_name not in LOSSES
-        raise ValueError("Uknown loss : {}".format(loss_name))
+        raise ValueError("Unknown loss : {}".format(loss_name))
 
 
 class BaseLoss(abc.ABC):
@@ -137,6 +143,10 @@ class BetaHLoss(BaseLoss):
     beta : float, optional
         Weight of the kl divergence.
 
+    fwd_kl : bool, optional
+        Whether to switch to forward KL divergence.
+        Normal VAEs, from the ELBo, use reverse.
+
     kwargs:
         Additional arguments for `BaseLoss`, e.g. `rec_dist`.
 
@@ -145,10 +155,10 @@ class BetaHLoss(BaseLoss):
         [1] Higgins, Irina, et al. "beta-vae: Learning basic visual concepts
         with a constrained variational framework." (2016).
     """
-
-    def __init__(self, beta=4, **kwargs):
+    def __init__(self, beta=4, fwd_kl=False, **kwargs):
         super().__init__(**kwargs)
         self.beta = beta
+        self.fwd_kl = fwd_kl
 
     def __call__(self, data, recon_data, latent_dist, is_train, storer,
                  **kwargs):
@@ -158,10 +168,12 @@ class BetaHLoss(BaseLoss):
                                         storer=storer,
                                         distribution=self.rec_dist)
         mean, logvar = latent_dist
-        var = logvar.exp()
-        kl_loss = _kl_normal_loss(mean, var, torch.zeros_like(mean), torch.ones_like(var), storer=storer)
-        # Uncomment this to flip KL
-        # kl_loss = _kl_normal_loss(torch.zeros_like(mean), torch.ones_like(var), mean, var, storer=storer)
+
+        if self.fwd_kl:
+            kl_loss = _kl_normal_loss(torch.zeros_like(mean), torch.zeros_like(logvar), mean, logvar, storer=storer)
+        else:
+            kl_loss = _kl_normal_loss(mean, logvar, torch.zeros_like(mean), torch.zeros_like(logvar), storer=storer)
+
         loss = rec_loss + self.beta * kl_loss
 
         if storer is not None:
@@ -448,7 +460,7 @@ class MMDLoss(BaseLoss):
 
 
 class GeometricJSLoss(BaseLoss):
-    r"""Compute VAE loss with skew geometric-Jensen-Shannon regularisation.
+    r"""Compute VAE loss with skew geometric-Jensen-Shannon regularisation [1].
 
     Parameters
     ----------
@@ -458,13 +470,27 @@ class GeometricJSLoss(BaseLoss):
     beta : float, optional
         Weight of the skew g-js divergence.
 
+    dual : bool, optional
+        Whether to use Dual or standard GJS.
+
+    invert_alpha : bool, optional
+        Whether to replace alpha with 1 - a.
+
     kwargs:
         Additional arguments for `BaseLoss`, e.g. `rec_dist`.
+
+    References
+    ----------
+        [1] Deasy, Jacob, Nikola Simidjievski, and Pietro Liò.
+        "Constraining Variational Inference with Geometric Jensen-Shannon Divergence."
+        Advances in Neural Information Processing Systems 33 (2020).
     """
-    def __init__(self, alpha=0.5, beta=1.0, **kwargs):
+    def __init__(self, alpha=0.5, beta=1.0, dual=True, invert_alpha=True, **kwargs):
         super().__init__(**kwargs)
         self.alpha = alpha
         self.beta = beta
+        self.dual = dual
+        self.invert_alpha = invert_alpha
 
     def __call__(self, data, recon_data, latent_dist, is_train, storer,
                  **kwargs):
@@ -474,46 +500,11 @@ class GeometricJSLoss(BaseLoss):
                                         storer=storer,
                                         distribution=self.rec_dist)
         gjs_loss = _gjs_normal_loss(*latent_dist,
+                                    dual=self.dual,
                                     a=self.alpha,
+                                    invert_alpha=self.invert_alpha,
                                     storer=storer)
         loss = rec_loss + self.beta * gjs_loss
-
-        if storer is not None:
-            storer['loss'] += [loss.item()]
-
-        return loss, rec_loss
-
-
-class DualGeometricJSLoss(BaseLoss):
-    r"""Compute VAE loss with dual skew geometric-Jensen-Shannon regularisation
-
-    Parameters
-    ----------
-    alpha : float, optional
-        Skew of the dual skew geometric-Jensen-Shannon divergence
-
-    beta : float, optional
-        Weight of the skew g-js divergence.
-
-    kwargs:
-        Additional arguments for `BaseLoss`, e.g. `rec_dist`.
-    """
-    def __init__(self, alpha=0.5, beta=1.0, **kwargs):
-        super().__init__(**kwargs)
-        self.alpha = alpha
-        self.beta = beta
-
-    def __call__(self, data, recon_data, latent_dist, is_train, storer,
-                 **kwargs):
-        storer = self._pre_call(is_train, storer)
-
-        rec_loss = _reconstruction_loss(data, recon_data,
-                                        storer=storer,
-                                        distribution=self.rec_dist)
-        dgjs_loss = _dual_gjs_normal_loss(*latent_dist,
-                                          a=self.alpha,
-                                          storer=storer)
-        loss = rec_loss + self.beta * dgjs_loss
 
         if storer is not None:
             storer['loss'] += [loss.item()]
@@ -585,40 +576,31 @@ def _reconstruction_loss(data, recon_data, distribution="bernoulli",
     return loss
 
 
-# def _kl_normal_loss(mean, logvar, storer=None):
-#     """
-#     Calculates the KL divergence between a normal distribution
-#     with diagonal covariance and a unit normal distribution.
+def _kl_normal_loss(m_1, lv_1, m_2, lv_2, term='', storer=None):
+    """
+    Calculates the KL divergence between two normal distributions
+    with diagonal covariance matrices.
 
-#     Parameters
-#     ----------
-#     mean : torch.Tensor
-#         Mean of the normal distribution. Shape (batch_size, latent_dim) where
-#         D is dimension of distribution.
+    Parameters
+    ----------
+    m_1 : torch.Tensor
+        Mean of normal distribution 1. Shape (B, D) where
+        D is dimension of distribution.
 
-#     logvar : torch.Tensor
-#         Diagonal log variance of the normal distribution. Shape (batch_size,
-#         latent_dim)
+    lv_1 : torch.Tensor
+        Diagonal log variance of normal distribution 1. Shape (B, D).
 
-#     storer : dict
-#         Dictionary in which to store important variables for vizualisation.
-#     """
-#     latent_dim = mean.size(1)
-#     # batch mean of kl for each latent dimension
-#     latent_kl = 0.5 * (-1 - logvar + mean.pow(2) + logvar.exp()).mean(dim=0)
-#     total_kl = latent_kl.sum()
+    m_2 : torch.Tensor
+        Mean of normal distribution 2. Shape (B, D).
 
-#     if storer is not None:
-#         storer['kl_loss'] += [total_kl.item()]
-#         for i in range(latent_dim):
-#             storer[f'kl_loss_{i}'] += [latent_kl[i].item()]
+    lv_2 : torch.Tensor
+        Diagonal log variance of normal distribution 2. Shape (B, D)
 
-#     return total_kl
-
-
-def _kl_normal_loss(m_1, v_1, m_2, v_2, term='', storer=None):
+    storer : dict
+        Dictionary in which to store important variables for vizualisation.
+    """
     latent_dim = m_1.size(1)
-    latent_kl = 0.5 * (-1 + torch.log(v_2 / v_1) + v_1 / v_2 + (m_2 - m_1).pow(2) / v_2).mean(dim=0)
+    latent_kl = 0.5 * (-1 + (lv_2 - lv_1) + lv_1.exp() / lv_2.exp() + (m_2 - m_1).pow(2) / lv_2.exp()).mean(dim=0)
     total_kl = latent_kl.sum()
 
     if storer is not None:
@@ -627,52 +609,6 @@ def _kl_normal_loss(m_1, v_1, m_2, v_2, term='', storer=None):
             storer['kl_loss'+str(term)+f'_{i}'] += [latent_kl[i].item()]
 
     return total_kl
-
-
-# def _gjs_normal_loss(mean, logvar, a=0.5, storer=None):
-#     """
-#     Calculates the skew geometric-JS divergence between a normal distribution
-#     with diagonal covariance and a unit normal distribution.
-
-#     Parameters
-#     ----------
-#     mean : torch.Tensor
-#         Mean of the normal distribution. Shape (batch_size, latent_dim) where
-#         D is dimension of distribution.
-
-#     logvar : torch.Tensor
-#         Diagonal log variance of the normal distribution. Shape (batch_size,
-#         latent_dim)
-
-#     a : float, optional
-#         Skew of the geometric-Jensen-Shannon divergence
-
-#     storer : dict, optional
-#         Dictionary in which to store important variables for vizualisation.
-#     """
-#     m = mean
-#     s = logvar.exp()
-#     s_a = s / ((1 - a) + a * s)
-#     m_a = (s_a * (1 - a) * m) / s
-#     # batch mean of gjs for each latent dimension
-#     gjs_1 = ((1 - a) * s + a) / s_a
-#     gjs_2 = torch.log(s_a / s ** (2 * (1 - a)))
-#     gjs_3 = ((1 - a) * (m_a - m) ** 2) / s_a
-#     gjs_4 = (a * m_a ** 2) / s_a
-#     latent_gjs = 0.5 * (gjs_1 + gjs_2 + gjs_3 + gjs_4 - 1).mean(dim=0)
-#     total_gjs = latent_gjs.sum()
-
-#     if storer is not None:
-#         storer['gjs_loss'] += [total_gjs.item()]
-#         for i in range(mean.size(1)):
-#             storer[f'gjs_loss_{i}'] += [latent_gjs[i].item()]
-
-#             storer[f'gjs_loss_{i}_1'] += [gjs_1.mean(dim=0)[i].item()]
-#             storer[f'gjs_loss_{i}_2'] += [gjs_2.mean(dim=0)[i].item()]
-#             storer[f'gjs_loss_{i}_3'] += [gjs_3.mean(dim=0)[i].item()]
-#             storer[f'gjs_loss_{i}_4'] += [gjs_4.mean(dim=0)[i].item()]
-
-#     return total_gjs
 
 
 def _get_mu_var(m_1, v_1, m_2, v_2, a=0.5, storer=None):
@@ -685,85 +621,35 @@ def _get_mu_var(m_1, v_1, m_2, v_2, a=0.5, storer=None):
     return m_a, v_a
 
 
-def _gjs_normal_loss(mean, logvar, a=0.5, storer=None):
+def _gjs_normal_loss(mean, logvar, dual=False, a=0.5, invert_alpha=True,
+                     storer=None):
     var = logvar.exp()
     mean_0 = torch.zeros_like(mean)
     var_0 = torch.ones_like(var)
-    mean_a, var_a = _get_mu_var(mean, var, mean_0, var_0, a=a, storer=storer)
-    # mean_a, var_a = _get_mu_var(mean, var, mean_0, var_0, a=1-a, storer=storer)  # the `1-a` here is IMPORTANT!!!
+    if invert_alpha:
+        mean_a, var_a = _get_mu_var(mean, var, mean_0, var_0, a=1-a, storer=storer)
+    else:
+        mean_a, var_a = _get_mu_var(mean, var, mean_0, var_0, a=a, storer=storer)
+    logvar = torch.log(var_a)
 
-    kl_1 = _kl_normal_loss(mean, var, mean_a, var_a, term=1, storer=storer)
-    kl_2 = _kl_normal_loss(mean_0, var_0, mean_a, var_a, term=2, storer=storer)
+    if dual:
+        kl_1 = _kl_normal_loss(mean_a, var_a, mean, var, term=1, storer=storer)
+        kl_2 = _kl_normal_loss(mean_a, var_a, mean_0, var_0, term=2, storer=storer)
+    else:
+        kl_1 = _kl_normal_loss(mean, var, mean_a, var_a, term=1, storer=storer)
+        kl_2 = _kl_normal_loss(mean_0, var_0, mean_a, var_a, term=2, storer=storer)
 
     total_gjs = (1 - a) * kl_1 + a * kl_2
 
     if storer is not None:
-        storer['gjs_loss'] += [total_gjs.item()]
+        storer_label = gjs_loss
+        if dual:
+            storer_label += '_dual'
+        if invert_alpha:
+            storer_label += '_invert'
+        storer[storer_label] += [total_gjs.item()]
 
     return total_gjs
-
-
-def _dual_gjs_normal_loss(mean, logvar, a=0.5, storer=None):
-    var = logvar.exp()
-    mean_0 = torch.zeros_like(mean)
-    var_0 = torch.ones_like(var)
-    mean_a, var_a = _get_mu_var(mean, var, mean_0, var_0, a=a, storer=storer)
-    # mean_a, var_a = _get_mu_var(mean, var, mean_0, var_0, a=1-a, storer=storer)  # the `1-a` here is IMPORTANT!!!
-
-    kl_1 = _kl_normal_loss(mean_a, var_a, mean, var, term=1, storer=storer)  # dual part is here
-    kl_2 = _kl_normal_loss(mean_a, var_a, mean_0, var_0, term=2, storer=storer)
-
-    total_dgjs = (1 - a) * kl_1 + a * kl_2
-
-    if storer is not None:
-        storer['dgjs_loss'] += [total_dgjs.item()]
-
-    return total_dgjs
-
-
-# def _dual_gjs_normal_loss(mean, logvar, a=0.5, storer=None):
-#     """
-#     Calculates the dual skew geometric-JS divergence between a normal
-#     distribution with diagonal covariance and a unit normal distribution.
-
-#     Parameters
-#     ----------
-#     mean : torch.Tensor
-#         Mean of the normal distribution. Shape (batch_size, latent_dim) where
-#         D is dimension of distribution.
-
-#     logvar : torch.Tensor
-#         Diagonal log variance of the normal distribution. Shape (batch_size,
-#         latent_dim)
-
-#     a : float, optional
-#         Skew of the dual geometric-Jensen-Shannon divergence
-
-#     storer : dict, optional
-#         Dictionary in which to store important variables for vizualisation.
-#     """
-#     m = mean
-#     s = logvar.exp()
-#     s_a = s / ((1 - a) + a * s)
-#     m_a = (s_a * (1 - a) * m) / s
-#     # batch mean of dgjs for each latent dimension
-#     dgjs_1 = m ** 2 / s
-#     dgjs_2 = - m_a ** 2 / s_a
-#     # dgjs_3 = torch.log(s ** (2 * (1 - a)) / s)
-#     dgjs_3 = torch.log(s ** (2 * (1 - a)) / s_a)
-#     latent_dgjs = 0.5 * (dgjs_1 + dgjs_2 + dgjs_3).mean(dim=0)
-#     total_dgjs = latent_dgjs.sum()
-
-#     if storer is not None:
-#         storer['dgjs_loss'] += [total_dgjs.item()]
-#         for i in range(mean.size(1)):
-#             storer[f'dgjs_loss_{i}'] += [latent_dgjs[i].item()]
-
-#             storer[f'dgjs_loss_{i}_1'] += [dgjs_1.mean(dim=0)[i].item()]
-#             storer[f'dgjs_loss_{i}_2'] += [dgjs_2.mean(dim=0)[i].item()]
-#             storer[f'dgjs_loss_{i}_3'] += [dgjs_3.mean(dim=0)[i].item()]
-
-#     return total_dgjs
 
 
 def _mmd_loss(mean, logvar, storer=None):
