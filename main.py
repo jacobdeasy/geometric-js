@@ -86,6 +86,9 @@ def parse_arguments(args_to_parse):
     GJS.add_argument('--GJS-B',
                      type=float, default=1.0,
                      help='Weight of the skew geometric-JS.')
+    GJS.add_argument('--GJS-invA',
+                     type=bool, default=True,
+                     help='Whether to invert alpha.')
 
     betaH = parser.add_argument_group('BetaH parameters')
     betaH.add_argument('--betaH-B',

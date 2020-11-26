@@ -642,7 +642,7 @@ def _gjs_normal_loss(mean, logvar, dual=False, a=0.5, invert_alpha=True,
     total_gjs = (1 - a) * kl_1 + a * kl_2
 
     if storer is not None:
-        storer_label = gjs_loss
+        storer_label = 'gjs_loss'
         if dual:
             storer_label += '_dual'
         if invert_alpha:
