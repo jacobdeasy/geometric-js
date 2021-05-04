@@ -3,6 +3,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
+import pdb
 
 
 class EncoderBurgess(nn.Module):
@@ -66,7 +67,7 @@ class EncoderBurgess(nn.Module):
 
     def forward(self, x):
         batch_size = x.size(0)
-
+        
         # Convolutional layers with ReLu activations
         x = torch.relu(self.conv1(x))
         x = torch.relu(self.conv2(x))
@@ -83,5 +84,52 @@ class EncoderBurgess(nn.Module):
         # Log std-dev in paper (bear in mind)
         mu_logvar = self.mu_logvar_gen(x)
         mu, logvar = mu_logvar.view(-1, self.latent_dim, 2).unbind(-1)
+
+        return mu, logvar
+
+
+class IntegrationEncoderCNCVAE(nn.Module):
+    def __init__(self, data_size, dense_units=128, latent_dim=16):
+        r"""Encoder of the concatanation VAE [1].
+
+        Parameters
+        ----------
+        data_size : int
+            Dimensionality of the input data
+        
+        dense_units : int
+            Number of units for the dense layer
+
+        latent_dim : int
+            Dimensionality of latent output.
+
+        Model Architecture (transposed for decoder)
+        ------------
+        - 1 fully connected layer with units defined by dense_units
+        - Latent distribution:
+            - 1 fully connected layer of latent_dim units (log variance and mean for
+            10 Gaussians)
+
+        References:
+            [1] Simidjievski, Nikola et al. “Variational Autoencoders for Cancer
+                Data Integration: Design Principles and Computational Practice.” 
+                Frontiers in genetics vol. 10 1205. 11 Dec. 2019,
+                doi:10.3389/fgene.2019.01205
+        """
+        super(IntegrationCNCVAE, self).__init__()
+
+        self.data_size = data_size
+        self.dense_units = dense_units
+        self.latent_dim = latent_dim
+
+        # define encoding layers
+        self.encode = nn.Linear(self.data_size, self.dense_units)
+        self.embed = nn.Linear(self.dense_units, self.latent_dim * 2)
+
+
+    def forward(self, x):
+        x = self.encode(x)
+        z = self.embed(x)
+        mu, logvar = z.view(-1, self.latent_dim, 2).unbind(-1)
 
         return mu, logvar

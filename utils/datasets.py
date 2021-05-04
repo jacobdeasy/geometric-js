@@ -15,6 +15,7 @@ import tarfile
 import torch
 import urllib.request
 import zipfile
+import pdb
 
 from PIL import Image
 from skimage.io import imread
@@ -37,7 +38,18 @@ DATASETS = list(DATASETS_DICT.keys())
 
 
 def get_dataset(dataset):
-    """Return the correct dataset."""
+    """Return the correct dataset.
+
+    Parameters
+    ----------
+    dataset : str
+        string of the name of the requested dataset.
+
+    Returns
+    -------
+    torchvision.datasets definition of the dataset class requested.
+
+    """
     dataset = dataset.lower()
     try:
         # eval because stores name as string in order to put it at top of file
@@ -71,16 +83,20 @@ def get_dataloaders(dataset, train=True, noise=None, root=None,
 
     kwargs :
         Additional arguments to `DataLoader`. Default values are modified.
+
     """
+
     pin_memory = pin_memory and torch.cuda.is_available  # only pin if GPU
     Dataset = get_dataset(dataset)
+
+    # Initialise the dataset class:
     if root is None:
-        if noise == 0.0:
+        if noise == 0.0 or noise == None:
             dataset = Dataset(train=train, logger=logger)
         else:
-            dataset = Dataset(train=train, logger=logger)
+            dataset = Dataset(train=train, noise=noise, logger=logger)
     else:
-        if noise is None:
+        if noise == 0.0 or noise == None:
             dataset = Dataset(train=train, root=root, logger=logger)
         else:
             dataset = Dataset(train=train, noise=noise, root=root,
@@ -173,31 +189,31 @@ class DSprites(DisentangledDataset):
     lat_values = {
         'posX': np.array([0., 0.03225806, 0.06451613, 0.09677419, 0.12903226,
                           0.16129032, 0.19354839, 0.22580645, 0.25806452,
-                                    0.29032258, 0.32258065, 0.35483871, 0.38709677,
-                                    0.41935484, 0.4516129, 0.48387097, 0.51612903,
-                                    0.5483871, 0.58064516, 0.61290323, 0.64516129,
-                                    0.67741935, 0.70967742, 0.74193548, 0.77419355,
-                                    0.80645161, 0.83870968, 0.87096774, 0.90322581,
-                                    0.93548387, 0.96774194, 1.]),
+                          0.29032258, 0.32258065, 0.35483871, 0.38709677,
+                          0.41935484, 0.4516129, 0.48387097, 0.51612903,
+                          0.5483871, 0.58064516, 0.61290323, 0.64516129,
+                          0.67741935, 0.70967742, 0.74193548, 0.77419355,
+                          0.80645161, 0.83870968, 0.87096774, 0.90322581,
+                          0.93548387, 0.96774194, 1.]),
         'posY': np.array([0., 0.03225806, 0.06451613, 0.09677419, 0.12903226,
-                        0.16129032, 0.19354839, 0.22580645, 0.25806452,
-                        0.29032258, 0.32258065, 0.35483871, 0.38709677,
-                        0.41935484, 0.4516129, 0.48387097, 0.51612903,
-                        0.5483871, 0.58064516, 0.61290323, 0.64516129,
-                        0.67741935, 0.70967742, 0.74193548, 0.77419355,
-                        0.80645161, 0.83870968, 0.87096774, 0.90322581,
-                        0.93548387, 0.96774194, 1.]),
+                          0.16129032, 0.19354839, 0.22580645, 0.25806452,
+                          0.29032258, 0.32258065, 0.35483871, 0.38709677,
+                          0.41935484, 0.4516129, 0.48387097, 0.51612903,
+                          0.5483871, 0.58064516, 0.61290323, 0.64516129,
+                          0.67741935, 0.70967742, 0.74193548, 0.77419355,
+                          0.80645161, 0.83870968, 0.87096774, 0.90322581,
+                          0.93548387, 0.96774194, 1.]),
         'scale': np.array([0.5, 0.6, 0.7, 0.8, 0.9, 1.]),
         'orientation': np.array([0., 0.16110732, 0.32221463, 0.48332195,
-                                0.64442926, 0.80553658, 0.96664389, 1.12775121,
-                                1.28885852, 1.44996584, 1.61107316, 1.77218047,
-                                1.93328779, 2.0943951, 2.25550242, 2.41660973,
-                                2.57771705, 2.73882436, 2.89993168, 3.061039,
-                                3.22214631, 3.38325363, 3.54436094, 3.70546826,
-                                3.86657557, 4.02768289, 4.1887902, 4.34989752,
-                                4.51100484, 4.67211215, 4.83321947, 4.99432678,
-                                5.1554341, 5.31654141, 5.47764873, 5.63875604,
-                                5.79986336, 5.96097068, 6.12207799, 6.28318531]),
+                                 0.64442926, 0.80553658, 0.96664389, 1.12775121,
+                                 1.28885852, 1.44996584, 1.61107316, 1.77218047,
+                                 1.93328779, 2.0943951, 2.25550242, 2.41660973,
+                                 2.57771705, 2.73882436, 2.89993168, 3.061039,
+                                 3.22214631, 3.38325363, 3.54436094, 3.70546826,
+                                 3.86657557, 4.02768289, 4.1887902, 4.34989752,
+                                 4.51100484, 4.67211215, 4.83321947, 4.99432678,
+                                 5.1554341, 5.31654141, 5.47764873, 5.63875604,
+                                 5.79986336, 5.96097068, 6.12207799, 6.28318531]),
         'shape': np.array([1., 2., 3.]),
         'color': np.array([1.])}
 
@@ -436,10 +452,10 @@ class NoisyMNIST(Dataset):
         return self.len
 
     def __getitem__(self, idx):
-        input = self.mnist_transforms(self.x[idx:idx+1])
+        input = self.mnist_transforms(self.x[idx:idx + 1])
         if self.noise is not None:
             input = self.add_noise(input)
-        output = self.mnist_transforms(self.x[idx:idx+1])
+        output = self.mnist_transforms(self.x[idx:idx + 1])
 
         return input, output
 
@@ -567,7 +583,10 @@ class AddGaussianNoise(object):
         self.mean = mean
 
     def __call__(self, tensor):
-        return tensor + torch.randn(tensor.size()) * self.std + self.mean
+        # return tensor + torch.randn(tensor.size()) * self.std + self.mean
+        #
+        # Clamp output so image with noise is still greyscale:
+        return torch.clamp(tensor + torch.randn(tensor.size()) * self.std + self.mean, 0, 1)
 
     def __repr__(self):
         return self.__class__.__name__ + f'(mean={self.mean}, std={self.std})'
