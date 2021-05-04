@@ -14,6 +14,7 @@ import os
 import seaborn as sns
 import sys
 import theano as th
+import pdb
 import theano.sandbox.linalg as tl
 import theano.tensor as tt
 
@@ -359,7 +360,7 @@ def fit_gjs(data, log_p, max_epochs=20):
     # initialize parameters
     b = th.shared(np.mean(data[:, idx], 1)[:, None], broadcastable=(False, True))
     a = th.shared(np.std(data[:, idx] - b.get_value(), 1)[:, None], broadcastable=[False, True])
-
+    
     # model density
     q = lambda X: normal(X, b, a)
     log_q = lambda X: -0.5 * tt.sum(tt.square((X - b) / a), 0) - D * tt.log(tt.abs_(a)) - D / 2. * np.log(np.pi)

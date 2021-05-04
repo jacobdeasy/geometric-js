@@ -2,14 +2,15 @@
 
 import torch
 import torch.nn as nn
+import pdb
 
 from vae.utils.initialization import weights_init
-from .decoders import DecoderBurgess
-from .encoders import EncoderBurgess
+from .decoders import DecoderBurgess, DecoderRezendeViola, IntegrationDecoderCNCVAE
+from .encoders import EncoderBurgess, IntegrationEncoderCNCVAE
 
 
 class VAE(nn.Module):
-    def __init__(self, img_size, latent_dim):
+    def __init__(self, img_size, latent_dim, encoding_type=None, dense_size=128):
         """
         Class which defines model and forward pass.
 
@@ -29,8 +30,16 @@ class VAE(nn.Module):
         self.latent_dim = latent_dim
         self.img_size = img_size
         self.num_pixels = self.img_size[1] * self.img_size[2]
-        self.encoder = EncoderBurgess(img_size, self.latent_dim)
-        self.decoder = DecoderBurgess(img_size, self.latent_dim)
+        
+        if encoding_type == 'IntegrativeCNCVAE':
+            self.encoder = IntegrationEncoderCNCVAE(data_size=img_size, dense_layer_size=dense_size, latent_dim=latent_dim)
+            self.decoder = IntegrationEncoderCNCVAE(data_size=img_size, dense_layer_size=dense_size, latent_dim=latent_dim)
+        elif decode_type == 'TamingVAEs':
+            self.encoder = EncoderBurgess(img_size, self.latent_dim)
+            self.decoder = DecoderRezendeViola(img_size, self.latent_dim)
+        else:
+            self.encoder = EncoderBurgess(img_size, self.latent_dim)
+            self.decoder = DecoderBurgess(img_size, self.latent_dim)
 
         self.reset_parameters()
 
@@ -63,6 +72,7 @@ class VAE(nn.Module):
         x : torch.Tensor
             Batch of data. Shape (batch_size, n_chan, height, width)
         """
+        
         latent_dist = self.encoder(x)
         latent_sample = self.reparameterize(*latent_dist)
         reconstruct = self.decoder(latent_sample)

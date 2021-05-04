@@ -2,6 +2,7 @@
 
 import abc
 import torch
+import pdb
 
 from torch import optim
 from torch.nn import functional as F
@@ -11,8 +12,8 @@ from vae.utils.math import (log_density_gaussian, log_importance_weight_matrix,
                             matrix_log_density_gaussian)
 
 
-LOSSES = ["VAE", "KL", "fwdKL", "GJS", "dGJS", "MMD", "betaH", "betaB",
-          "factor", "btcvae"]
+LOSSES = ["VAE", "KL", "fwdKL", "KLtrainbeta", "GJS", "dGJS", "tGJS", "tdGJS",  "GJStrainprior", "dGJStrainprior",
+          "MMD", "betaH", "betaB", "factor", "btcvae"]
 RECON_DIST = ["bernoulli", "laplace", "gaussian"]
 
 
@@ -26,7 +27,10 @@ def get_loss_f(loss_name, **kwargs_parse):
     elif loss_name == "KL":
         return BetaHLoss(beta=1, **kwargs_all)
     elif loss_name == "fwdKL":
-        return BetaHLoss(beta=1, **kwargs_all)
+        return BetaHLoss(beta=1, fwd_kl=True, **kwargs_all)
+    elif loss_name == 'KLtrainbeta':
+        return BVAETrainBeta(beta=kwargs_parse["GJS_B"],
+                            **kwargs_all)
     elif loss_name == "GJS":
         return GeometricJSLoss(alpha=kwargs_parse["GJS_A"],
                                beta=kwargs_parse["GJS_B"],
@@ -39,6 +43,25 @@ def get_loss_f(loss_name, **kwargs_parse):
                                dual=True,
                                invert_alpha=kwargs_parse["GJS_invA"],
                                **kwargs_all)
+    elif loss_name == "tGJS":
+        return GeometricJSLossTrainableAlpha(alpha=kwargs_parse["GJS_A"],
+                                             beta=kwargs_parse["GJS_B"],
+                                             dual=False,
+                                             invert_alpha=kwargs_parse["GJS_invA"],
+                                             **kwargs_all)
+    elif loss_name == "tdGJS":
+        return GeometricJSLossTrainableAlpha(alpha=kwargs_parse["GJS_A"],
+                                             beta=kwargs_parse["GJS_B"],
+                                             dual=True,
+                                             invert_alpha=kwargs_parse["GJS_invA"],
+                                             **kwargs_all)
+    elif loss_name == "dGJStrainprior":
+        return GeometricJSLossTrainablePrior(alpha=kwargs_parse["GJS_A"],
+                                             beta=kwargs_parse["GJS_B"],
+                                             dual=True,
+                                             device='cuda',
+                                             invert_alpha=kwargs_parse["GJS_invA"],
+                                             **kwargs_all)
     elif loss_name == "MMD":
         return MMDLoss(beta=kwargs_parse["MMD_B"],
                        **kwargs_all)
@@ -87,7 +110,8 @@ class BaseLoss(abc.ABC):
     """
 
     def __init__(self, record_loss_every=938, rec_dist="bernoulli",
-                 steps_anneal=0):
+                 steps_anneal=0, **kwargs):
+        super().__init__(**kwargs)
         self.n_train_steps = 0
         self.record_loss_every = record_loss_every
         self.rec_dist = rec_dist
@@ -155,9 +179,59 @@ class BetaHLoss(BaseLoss):
         [1] Higgins, Irina, et al. "beta-vae: Learning basic visual concepts
         with a constrained variational framework." (2016).
     """
+
     def __init__(self, beta=4, fwd_kl=False, **kwargs):
         super().__init__(**kwargs)
         self.beta = beta
+        self.fwd_kl = fwd_kl
+
+    def __call__(self, data, recon_data, latent_dist, is_train, storer,
+                 **kwargs):
+        storer = self._pre_call(is_train, storer)
+
+        rec_loss = _reconstruction_loss(data, recon_data,
+                                        storer=storer,
+                                        distribution=self.rec_dist)
+        mean, logvar = latent_dist
+
+        if self.fwd_kl:
+            kl_loss = _kl_normal_loss(torch.zeros_like(mean), torch.zeros_like(logvar), mean, logvar, storer=storer)
+        else:
+            kl_loss = _kl_normal_loss(mean, logvar, torch.zeros_like(mean), torch.zeros_like(logvar), storer=storer)
+
+        loss = rec_loss + self.beta * kl_loss
+
+        if storer is not None:
+            storer['loss'].append(loss.item())
+
+        return loss, rec_loss
+
+
+class BVAETrainBeta(BaseLoss):
+    """
+    Compute the Beta-VAE loss as in [1]
+
+    Parameters
+    ----------
+    beta : float, optional
+        Weight of the kl divergence.
+
+    fwd_kl : bool, optional
+        Whether to switch to forward KL divergence.
+        Normal VAEs, from the ELBo, use reverse.
+
+    kwargs:
+        Additional arguments for `BaseLoss`, e.g. `rec_dist`.
+
+    References
+    ----------
+        [1] Higgins, Irina, et al. "beta-vae: Learning basic visual concepts
+        with a constrained variational framework." (2016).
+    """
+
+    def __init__(self, beta=4, fwd_kl=False, device=None, **kwargs):
+        super().__init__(**kwargs)
+        self.beta = torch.nn.Parameter(torch.tensor([beta]).to(device))
         self.fwd_kl = fwd_kl
 
     def __call__(self, data, recon_data, latent_dist, is_train, storer,
@@ -222,8 +296,8 @@ class BetaBLoss(BaseLoss):
         kl_loss = _kl_normal_loss(*latent_dist, storer)
 
         C = (linear_annealing(
-                self.C_init, self.C_fin, self.n_train_steps, self.steps_anneal)
-             if is_train else self.C_fin)
+            self.C_init, self.C_fin, self.n_train_steps, self.steps_anneal)
+            if is_train else self.C_fin)
 
         loss = rec_loss + self.gamma * (kl_loss - C).abs()
 
@@ -299,8 +373,8 @@ class FactorKLoss(BaseLoss):
         # `tc_loss = (2 * d_z.flatten()).mean()`
 
         anneal_reg = (linear_annealing(
-                          0, 1, self.n_train_steps, self.steps_anneal)
-                      if model.training else 1)
+            0, 1, self.n_train_steps, self.steps_anneal)
+            if model.training else 1)
         vae_loss = rec_loss + kl_loss + anneal_reg * self.gamma * tc_loss
 
         if storer is not None:
@@ -409,8 +483,8 @@ class BtcvaeLoss(BaseLoss):
         dw_kl_loss = (log_prod_qzi - log_pz).mean()
 
         anneal_reg = (linear_annealing(
-                          0, 1, self.n_train_steps, self.steps_anneal)
-                      if is_train else 1)
+            0, 1, self.n_train_steps, self.steps_anneal)
+            if is_train else 1)
 
         # total loss
         loss = rec_loss + (self.alpha * mi_loss +
@@ -439,6 +513,7 @@ class MMDLoss(BaseLoss):
     kwargs:
         Additional arguments for `BaseLoss`, e.g. `rec_dist`.
     """
+
     def __init__(self, beta=500.0, **kwargs):
         super().__init__(**kwargs)
         self.beta = beta
@@ -485,6 +560,7 @@ class GeometricJSLoss(BaseLoss):
         "Constraining Variational Inference with Geometric Jensen-Shannon Divergence."
         Advances in Neural Information Processing Systems 33 (2020).
     """
+
     def __init__(self, alpha=0.5, beta=1.0, dual=True, invert_alpha=True, **kwargs):
         super().__init__(**kwargs)
         self.alpha = alpha
@@ -500,6 +576,143 @@ class GeometricJSLoss(BaseLoss):
                                         storer=storer,
                                         distribution=self.rec_dist)
         gjs_loss = _gjs_normal_loss(*latent_dist,
+                                    dual=self.dual,
+                                    a=self.alpha,
+                                    invert_alpha=self.invert_alpha,
+                                    storer=storer)
+        loss = rec_loss + self.beta * gjs_loss
+
+        if storer is not None:
+            storer['loss'] += [loss.item()]
+
+        return loss, rec_loss
+
+
+class GeometricJSLossTrainableAlpha(BaseLoss, torch.nn.Module):
+    r"""Compute VAE loss with skew geometric-Jensen-Shannon regularisation [1].
+
+    Parameters
+    ----------
+    alpha : float, optional
+        Skew of the skew geometric-Jensen-Shannon divergence
+
+    beta : float, optional
+        Weight of the skew g-js divergence.
+
+    dual : bool, optional
+        Whether to use Dual or standard GJS.
+
+    invert_alpha : bool, optional
+        Whether to replace alpha with 1 - a.
+
+    kwargs:
+        Additional arguments for `BaseLoss`, e.g. `rec_dist`.
+
+    References
+    ----------
+        [1] Deasy, Jacob, Nikola Simidjievski, and Pietro Liò.
+        "Constraining Variational Inference with Geometric Jensen-Shannon Divergence."
+        Advances in Neural Information Processing Systems 33 (2020).
+    """
+
+    def __init__(self, alpha=None, beta=1.0, dual=True, invert_alpha=True, device=None, **kwargs):
+        super(GeometricJSLossTrainableAlpha, self).__init__(**kwargs)
+    
+        if alpha is not None:
+            self.alpha = torch.nn.Parameter(torch.tensor([alpha]).to(device))
+
+        else:
+            self.alpha = torch.nn.Parameter(torch.rand(1).to(device))
+            
+        self.mean_prior = None
+        self.logvar_prior = None
+        self.beta = beta
+        self.dual = dual
+        self.invert_alpha = invert_alpha
+        self.device = device
+
+    def __call__(self, data, recon_data, latent_dist, is_train, storer, record_alpha_range=False,
+                 **kwargs):
+        storer = self._pre_call(is_train, storer)
+        
+        rec_loss = _reconstruction_loss(data, recon_data,
+                                        storer=storer,
+                                        distribution=self.rec_dist)
+        gjs_loss = _gjs_normal_loss(*latent_dist,
+                                    dual=self.dual,
+                                    a=self.alpha,
+                                    invert_alpha=self.invert_alpha,
+                                    storer=storer,
+                                    record_alpha_range=record_alpha_range)
+        loss = rec_loss + self.beta * gjs_loss
+
+        if storer is not None:
+            storer['loss'] += [loss.item()]
+
+        return loss, rec_loss
+
+
+class GeometricJSLossTrainablePrior(BaseLoss, torch.nn.Module):
+    r"""Compute VAE loss with skew geometric-Jensen-Shannon regularisation [1].
+
+    Parameters
+    ----------
+    alpha : float, optional
+        Skew of the skew geometric-Jensen-Shannon divergence
+
+    beta : float, optional
+        Weight of the skew g-js divergence.
+
+    dual : bool, optional
+        Whether to use Dual or standard GJS.
+
+    invert_alpha : bool, optional
+        Whether to replace alpha with 1 - a.
+
+    kwargs:
+        Additional arguments for `BaseLoss`, e.g. `rec_dist`.
+
+    References
+    ----------
+        [1] Deasy, Jacob, Nikola Simidjievski, and Pietro Liò.
+        "Constraining Variational Inference with Geometric Jensen-Shannon Divergence."
+        Advances in Neural Information Processing Systems 33 (2020).
+    """
+
+    def __init__(self, alpha=None, beta=1.0, dual=True, invert_alpha=True, device=None, **kwargs):
+        super(GeometricJSLossTrainablePrior, self).__init__(**kwargs)
+    
+        if alpha is not None:
+            if device is not None:
+                self.alpha = torch.nn.Parameter(torch.tensor([alpha]).to(device))
+            else:
+                self.alpha = torch.nn.Parameter(torch.tensor([alpha]).to(device))
+
+        else:
+            if device is not None:
+                self.alpha = torch.nn.Parameter(torch.rand(1).to(device))
+            else:
+                self.alpha = torch.nn.Parameter(torch.rand(1).to(device))
+            
+        self.mean_prior = torch.nn.Parameter(torch.zeros(10).to(device))
+        self.logvar_prior = torch.nn.Parameter(torch.zeros(10).to(device))
+
+        self.beta = beta
+        self.dual = dual
+        self.invert_alpha = invert_alpha
+        self.device = device
+
+
+    def __call__(self, data, recon_data, latent_dist, is_train, storer,
+                 **kwargs):
+        storer = self._pre_call(is_train, storer)
+        
+        rec_loss = _reconstruction_loss(data, recon_data,
+                                        storer=storer,
+                                        distribution=self.rec_dist)
+        gjs_loss = _gjs_normal_loss_train_prior(*latent_dist,
+                                    mean_prior=self.mean_prior, 
+                                    logvar_prior=self.logvar_prior,
                                     dual=self.dual,
                                     a=self.alpha,
                                     invert_alpha=self.invert_alpha,
@@ -549,7 +762,7 @@ def _reconstruction_loss(data, recon_data, distribution="bernoulli",
     """
     batch_size, n_chan, _, _ = recon_data.size()
     # is_colored = n_chan == 3
-
+    recon_data = torch.clamp(recon_data, 0, 1)
     if distribution == "bernoulli":
         loss = F.binary_cross_entropy(recon_data, data, reduction="sum")
     elif distribution == "gaussian":
@@ -604,10 +817,10 @@ def _kl_normal_loss(m_1, lv_1, m_2, lv_2, term='', storer=None):
     total_kl = latent_kl.sum()
 
     if storer is not None:
-        storer['kl_loss'+str(term)] += [total_kl.item()]
+        storer['kl_loss' + str(term)] += [total_kl.item()]
         for i in range(latent_dim):
-            storer['kl_loss'+str(term)+f'_{i}'] += [latent_kl[i].item()]
-
+            storer['kl_loss' + str(term) + f'_{i}'] += [latent_kl[i].item()]
+    
     return total_kl
 
 
@@ -615,6 +828,7 @@ def _get_mu_var(m_1, v_1, m_2, v_2, a=0.5, storer=None):
     """
     Get mean and standard deviation of geometric mean distribution.
     """
+    
     v_a = 1 / ((1 - a) / v_1 + a / v_2)
     m_a = v_a * ((1 - a) * m_1 / v_1 + a * m_2 / v_2)
 
@@ -622,15 +836,27 @@ def _get_mu_var(m_1, v_1, m_2, v_2, a=0.5, storer=None):
 
 
 def _gjs_normal_loss(mean, logvar, dual=False, a=0.5, invert_alpha=True,
-                     storer=None):
+                     storer=None, record_alpha_range=False):
+    
+    # Calculate the mean and variation of the intermediate distribution using 
+    # the mean and variance - *not* the logvar which is passed to the function
     var = logvar.exp()
+
+    # Define the unit variance gaussian to which we want to constrain the
+    # latent space
     mean_0 = torch.zeros_like(mean)
     var_0 = torch.ones_like(var)
+    
     if invert_alpha:
-        mean_a, var_a = _get_mu_var(mean, var, mean_0, var_0, a=1-a, storer=storer)
+        mean_a, var_a = _get_mu_var(mean, var, mean_0, var_0, a=1 - a, storer=storer)
     else:
         mean_a, var_a = _get_mu_var(mean, var, mean_0, var_0, a=a, storer=storer)
-    logvar = torch.log(var_a)
+    
+    # Calculate the KL terms using the logvar rather than variance - for convenience
+    # of writing the expression:
+    var_a = torch.log(var_a)
+    var_0 = torch.log(var_0)
+    var = torch.log(var)
 
     if dual:
         kl_1 = _kl_normal_loss(mean_a, var_a, mean, var, term=1, storer=storer)
@@ -638,6 +864,91 @@ def _gjs_normal_loss(mean, logvar, dual=False, a=0.5, invert_alpha=True,
     else:
         kl_1 = _kl_normal_loss(mean, var, mean_a, var_a, term=1, storer=storer)
         kl_2 = _kl_normal_loss(mean_0, var_0, mean_a, var_a, term=2, storer=storer)
+
+    total_gjs = (1 - a) * kl_1 + a * kl_2
+
+    if storer is not None:
+        storer_label = 'gjs_loss'
+        if dual:
+            storer_label += '_dual'
+        if invert_alpha:
+            storer_label += '_invert'
+        storer[storer_label] += [total_gjs.item()]
+    
+        # Record what the alpha landscape looks like if record_alpha_range is true
+        if record_alpha_range:
+            storer_label = 'gjs_loss'
+            if dual:
+                storer_label += '_dual'
+            if invert_alpha:
+                storer_label += '_invert'
+            with torch.no_grad():
+                for i in range(101):
+                    gjs = calculate_gjs(mean, logvar, dual=False, a=i/100, invert_alpha=True)
+                    storer[f"storer_label_alpha_test={i/100}"] += [gjs.item()]
+
+
+    return total_gjs
+
+def calculate_gjs(mean, logvar, dual=False, a=0.5, invert_alpha=True):
+    """
+    Same function as _gjs_normal_loss except the gjs loss value is not
+    automatically stored to the training logger.
+    """
+    
+    var = logvar.exp()
+
+    # Define the unit variance gaussian to which we want to constrain the
+    # latent space
+    mean_0 = torch.zeros_like(mean)
+    var_0 = torch.ones_like(var)
+    
+    if invert_alpha:
+        mean_a, var_a = _get_mu_var(mean, var, mean_0, var_0, a=1 - a)
+    else:
+        mean_a, var_a = _get_mu_var(mean, var, mean_0, var_0, a=a)
+    
+    # Calculate the KL terms using the logvar rather than variance - for convenience
+    # of writing the expression:
+    var_a = torch.log(var_a)
+    var_0 = torch.log(var_0)
+    var = torch.log(var)
+
+    if dual:
+        kl_1 = _kl_normal_loss(mean_a, var_a, mean, var, term=1)
+        kl_2 = _kl_normal_loss(mean_a, var_a, mean_0, var_0, term=2)
+    else:
+        kl_1 = _kl_normal_loss(mean, var, mean_a, var_a, term=1)
+        kl_2 = _kl_normal_loss(mean_0, var_0, mean_a, var_a, term=2)
+
+    total_gjs = (1 - a) * kl_1 + a * kl_2
+    return total_gjs
+
+
+def _gjs_normal_loss_train_prior(mean, logvar, mean_prior, logvar_prior, dual=False, a=0.5, invert_alpha=True,
+                     storer=None):
+    var = logvar.exp()
+    var_prior = logvar_prior.exp()
+
+    # Calculate the mean and variation of the intermediate distribution using 
+    # the mean and variance - *not* the logvar which is passed to the function
+    if invert_alpha:
+        mean_a, var_a = _get_mu_var(mean, var, mean_prior, var_prior, a=1 - a, storer=storer)
+    else:
+        mean_a, var_a = _get_mu_var(mean, var, mean_prior, var_prior, a=a, storer=storer)
+    
+    # Calculate the KL terms using the logvar rather than variance - for convenience
+    # of writing the expression:
+    var_a = torch.log(var_a)
+    var = torch.log(var)
+    var_prior = torch.log(var_prior)
+
+    if dual:
+        kl_1 = _kl_normal_loss(mean_a, var_a, mean, var, term=1, storer=storer)
+        kl_2 = _kl_normal_loss(mean_a, var_a, mean_prior, var_prior, term=2, storer=storer)
+    else:
+        kl_1 = _kl_normal_loss(mean, var, mean_a, var_a, term=1, storer=storer)
+        kl_2 = _kl_normal_loss(mean_prior, var_prior, mean_a, var_a, term=2, storer=storer)
 
     total_gjs = (1 - a) * kl_1 + a * kl_2
 
