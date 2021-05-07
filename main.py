@@ -6,6 +6,8 @@ import os
 import sys
 import torch.optim as optim
 
+from typing import List
+
 from vae import Evaluator, Trainer
 from vae.models.losses import LOSSES, RECON_DIST, get_loss_f
 from vae.models.vae import VAE
@@ -19,7 +21,7 @@ from utils.visualize import GifTraversalsTraining
 RES_DIR = 'results'
 
 
-def parse_arguments(args_to_parse):
+def parse_arguments(args_to_parse: List):
     """Parse the command line arguments.
 
     Parameters
@@ -145,14 +147,8 @@ def parse_arguments(args_to_parse):
     return args
 
 
-def main(args):
-    """Main train and evaluation function.
-
-    Parameters
-    ----------
-    args: argparse.Namespace
-        Arguments
-    """
+def main(args: argparse.Namespace):
+    """Main train and evaluation function."""
     formatter = logging.Formatter(
         '%(asctime)s %(levelname)s - %(funcName)s: %(message)s', "%H:%M:%S")
     logger = logging.getLogger(__name__)

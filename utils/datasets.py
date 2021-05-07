@@ -15,41 +15,30 @@ import tarfile
 import torch
 import urllib.request
 import zipfile
-import pdb
 
 from PIL import Image
 from skimage.io import imread
 from torch.utils.data import DataLoader, Dataset
 from torchvision import datasets, transforms
 from tqdm import tqdm
+from typing import Any, List, Optional, Tuple
 
 
 DIR = os.path.abspath(os.path.dirname(__file__))
 COLOUR_BLACK = 0
 COLOUR_WHITE = 1
-DATASETS_DICT = {"mnist": "MNIST",
-                 "fashion": "FashionMNIST",
-                 "nmnist": "NoisyMNIST",
-                 "bmnist": "BinarizedMNIST",
+DATASETS_DICT = {"mnist":    "MNIST",
+                 "fashion":  "FashionMNIST",
+                 "nmnist":   "NoisyMNIST",
+                 "bmnist":   "BinarizedMNIST",
                  "dsprites": "DSprites",
-                 "celeba": "CelebA",
-                 "chairs": "Chairs"}
+                 "celeba":   "CelebA",
+                 "chairs":   "Chairs"}
 DATASETS = list(DATASETS_DICT.keys())
 
 
-def get_dataset(dataset):
-    """Return the correct dataset.
-
-    Parameters
-    ----------
-    dataset : str
-        string of the name of the requested dataset.
-
-    Returns
-    -------
-    torchvision.datasets definition of the dataset class requested.
-
-    """
+def get_dataset(dataset: str) -> Dataset:
+    """Return the correct dataset."""
     dataset = dataset.lower()
     try:
         # eval because stores name as string in order to put it at top of file
@@ -58,32 +47,28 @@ def get_dataset(dataset):
         raise ValueError(f"Unkown dataset: {dataset}")
 
 
-def get_img_size(dataset):
-    """Return the correct image size."""
-    return get_dataset(dataset).img_size
+# def get_img_size(dataset: str) -> Tuple:
+#     """Return the correct image size."""
+#     return get_dataset(dataset).img_size
 
 
-def get_background(dataset):
-    """Return the image background color."""
-    return get_dataset(dataset).background_color
+# def get_background(dataset):
+#     """Return the image background color."""
+#     return get_dataset(dataset).background_color
 
 
-def get_dataloaders(dataset, train=True, noise=None, root=None,
-                    pin_memory=True, batch_size=128,
-                    logger=logging.getLogger(__name__), **kwargs):
+def get_dataloaders(dataset: str,
+                    train: Optional[bool] = True,
+                    noise: Optional[float] = None,
+                    root: Optional[str] = None,
+                    pin_memory: Optional[bool] = True,
+                    batch_size: Optional[int] = 128,
+                    logger: Optional[Any] = logging.getLogger(__name__),
+                    **kwargs: Any
+                    ) -> DataLoader:
     """A generic data loader
-
-    Parameters
-    ----------
     dataset : {"mnist", "fashion", "dsprites", "celeba", "chairs"}
         Name of the dataset to load
-
-    root : str
-        Path to the dataset root. If `None` uses the default one.
-
-    kwargs :
-        Additional arguments to `DataLoader`. Default values are modified.
-
     """
 
     pin_memory = pin_memory and torch.cuda.is_available  # only pin if GPU
@@ -110,52 +95,38 @@ def get_dataloaders(dataset, train=True, noise=None, root=None,
 
 
 class DisentangledDataset(Dataset, abc.ABC):
-    """Base Class for disentangled VAE datasets.
+    """Base Class for disentangled VAE datasets."""
 
-    Parameters
-    ----------
-    root : string
-        Root directory of dataset.
-
-    transforms_list : list
-        List of `torch.vision.transforms` to apply to the data when loading it.
-    """
-
-    def __init__(self, root, transforms_list=[], logger=logging.getLogger(__name__)):
+    def __init__(self,
+                 root: str,
+                 transforms_list: Optional[List[Any]] = [],
+                 logger: Optional[Any] = logging.getLogger(__name__)):
         self.root = root
         self.train_data = os.path.join(root, type(self).files["train"])
         self.transforms = transforms.Compose(transforms_list)
         self.logger = logger
 
         if not os.path.isdir(root):
-            self.logger.info("Downloading {} ...".format(str(type(self))))
+            self.logger.info(f"Downloading {str(type(self))} ...")
             self.download()
             self.logger.info("Finished Downloading.")
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.imgs)
 
     @abc.abstractmethod
-    def __getitem__(self, idx):
-        """Get the image of `idx`.
-
-        Return
-        ------
-        sample : torch.Tensor
-            Tensor in [0.,1.] of shape `img_size`.
-        """
+    def __getitem__(self, idx: int) -> torch.Tensor:
         pass
 
     @abc.abstractmethod
     def download(self):
-        """Download the dataset. """
         pass
 
 
 class DSprites(DisentangledDataset):
     """DSprites Dataset from [1].
 
-    Disentanglement test Sprites dataset.Procedurally generated 2D shapes, from 6
+    Disentanglement test Sprites dataset. Procedurally generated 2D shapes, from 6
     disentangled latent factors. This dataset uses 6 latents, controlling the color,
     shape, scale, rotation and position of a sprite. All possible variations of
     the latents are present. Ordering along dimension 1 is fixed and can be mapped
@@ -166,11 +137,6 @@ class DSprites(DisentangledDataset):
     -----
     - Link : https://github.com/deepmind/dsprites-dataset/
     - hard coded metadata because issue with python 3 loading of python 2
-
-    Parameters
-    ----------
-    root : string
-        Root directory of dataset.
 
     References
     ----------
@@ -217,7 +183,9 @@ class DSprites(DisentangledDataset):
         'shape': np.array([1., 2., 3.]),
         'color': np.array([1.])}
 
-    def __init__(self, train=True, root=os.path.join(DIR, '../data/dsprites/'), **kwargs):
+    def __init__(self,
+                 root: Optional[str] = os.path.join(DIR, '../data/dsprites/'),
+                 **kwargs: Optional[Any]):
         super().__init__(root, [transforms.ToTensor()], **kwargs)
 
         dataset_zip = np.load(self.train_data)
@@ -225,13 +193,12 @@ class DSprites(DisentangledDataset):
         self.lat_values = dataset_zip['latents_values']
 
     def download(self):
-        """Download the dataset."""
         os.makedirs(self.root)
         subprocess.check_call(["curl", "-L", type(self).urls["train"],
                                "--output", self.train_data])
 
-    def __getitem__(self, idx):
-        """Get the image of `idx`
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, np.ndarray]:
+        """
         Return
         ------
         sample : torch.Tensor
@@ -249,6 +216,7 @@ class DSprites(DisentangledDataset):
         sample = self.transforms(sample)
 
         lat_value = self.lat_values[idx]
+
         return sample, lat_value
 
 
@@ -265,11 +233,6 @@ class CelebA(DisentangledDataset):
     -----
     - Link : http://mmlab.ie.cuhk.edu.hk/projects/CelebA.html
 
-    Parameters
-    ----------
-    root : string
-        Root directory of dataset.
-
     References
     ----------
     [1] Liu, Z., Luo, P., Wang, X., & Tang, X. (2015). Deep learning face
@@ -282,13 +245,14 @@ class CelebA(DisentangledDataset):
     img_size = (3, 64, 64)
     background_color = COLOUR_WHITE
 
-    def __init__(self, root=os.path.join(DIR, '../data/celeba'), **kwargs):
+    def __init__(self,
+                 root: Optional[str] = os.path.join(DIR, '../data/celeba'),
+                 **kwargs: Optional[Any]):
         super().__init__(root, [transforms.ToTensor()], **kwargs)
 
         self.imgs = glob.glob(self.train_data + '/*')
 
     def download(self):
-        """Download the dataset."""
         save_path = os.path.join(self.root, 'celeba.zip')
         os.makedirs(self.root)
         subprocess.check_call(["curl", "-L", type(self).urls["train"],
@@ -307,17 +271,7 @@ class CelebA(DisentangledDataset):
         self.logger.info("Resizing CelebA ...")
         preprocess(self.train_data, size=type(self).img_size[1:])
 
-    def __getitem__(self, idx):
-        """Get the image of `idx`
-
-        Return
-        ------
-        sample : torch.Tensor
-            Tensor in [0.,1.] of shape `img_size`.
-
-        placeholder :
-            Placeholder value as their are no targets.
-        """
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
         img_path = self.imgs[idx]
         # img values already between 0 and 255
         img = imread(img_path)
@@ -325,8 +279,7 @@ class CelebA(DisentangledDataset):
         # put each pixel in [0.,1.] and reshape to (C x H x W)
         img = self.transforms(img)
 
-        # no label so return 0 (note that can't return None because)
-        # dataloaders requires so
+        # no label so return 0 (Dataloaders can't return None)
         return img, 0
 
 
@@ -336,11 +289,6 @@ class Chairs(datasets.ImageFolder):
     Notes
     -----
     - Link : https://www.di.ens.fr/willow/research/seeing3Dchairs
-
-    Parameters
-    ----------
-    root : string
-        Root directory of dataset.
 
     References
     ----------
@@ -355,8 +303,9 @@ class Chairs(datasets.ImageFolder):
     img_size = (1, 64, 64)
     background_color = COLOUR_WHITE
 
-    def __init__(self, train=True, root=os.path.join(DIR, '../data/chairs'),
-                 logger=logging.getLogger(__name__)):
+    def __init__(self,
+                 root: Optional[str] = os.path.join(DIR, '../data/chairs'),
+                 logger: Optional[Any] = logging.getLogger(__name__)):
         self.root = root
         self.train_data = os.path.join(root, type(self).files["train"])
         self.transforms = transforms.Compose([transforms.Grayscale(),

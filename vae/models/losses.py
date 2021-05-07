@@ -12,7 +12,8 @@ from vae.utils.math import (log_density_gaussian, log_importance_weight_matrix,
                             matrix_log_density_gaussian)
 
 
-LOSSES = ["VAE", "KL", "fwdKL", "KLtrainbeta", "GJS", "dGJS", "tGJS", "tdGJS",  "GJStrainprior", "dGJStrainprior",
+LOSSES = ["VAE", "KL", "fwdKL", "KLtrainbeta", "GJS", "dGJS",
+          "tGJS", "tdGJS",  "GJStrainprior", "dGJStrainprior",
           "MMD", "betaH", "betaB", "factor", "btcvae"]
 RECON_DIST = ["bernoulli", "laplace", "gaussian"]
 
@@ -889,6 +890,7 @@ def _gjs_normal_loss(mean, logvar, dual=False, a=0.5, invert_alpha=True,
 
 
     return total_gjs
+
 
 def calculate_gjs(mean, logvar, dual=False, a=0.5, invert_alpha=True):
     """

@@ -1,17 +1,18 @@
-import numpy as np
-from scipy.stats import multivariate_normal
-import torch
-import torch.optim as optim
+import abc
 import json
-import sys
+import numpy as np
 import os
 import logging
-import abc
-from tqdm import tqdm
-from timeit import default_timer
+import seaborn as sns
+import sys
+import torch
+import torch.optim as optim
+
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 from matplotlib import pyplot as plt
-import seaborn as sns
+from scipy.stats import multivariate_normal
+from timeit import default_timer
+from tqdm import tqdm
 
 sns.set()
 sns.set_style('whitegrid')
@@ -19,7 +20,6 @@ sns.set_style('ticks')
 
 TRAIN_LOSSES_LOGFILE = "train_losses.log"
 
-# Divergence Loss Classes:
 
 class BaseDivergence(abc.ABC):
     """
@@ -550,7 +550,7 @@ def train_model(model, optimizer, data_samples, log_loc, learn_a=False, dimensio
 
     return model
 
-    
+
 def main(argv):
     parser = ArgumentParser(argv[0],
                             description=__doc__,
@@ -574,9 +574,9 @@ def main(argv):
                         help='Learning rate.')
     parser.add_argument('--epochs', type=int, default=20,
                         help='Number of training epochs.')
-    parser.add_argument('--plot-output', type=str, default='/home/tam63/figures/synthetic-experiments',
+    parser.add_argument('--plot-output', type=str, default=os.path.join(os.pardir, 'figs'),
                         help='Where to store plots produced.')
-    parser.add_argument('--train-log-output', '-o', type=str, default='/home/tam63/results/synthetic-experiments',
+    parser.add_argument('--train-log-output', '-o', type=str, default=os.path.join(os.pardir, 'logs'),
                         help='Where to store log of data produced during training.')
     parser.add_argument('--save-mixture-plot', type=bool, default=True,
                         help='Where to store results.')
