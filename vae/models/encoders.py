@@ -116,7 +116,7 @@ class IntegrationEncoderCNCVAE(nn.Module):
                 Frontiers in genetics vol. 10 1205. 11 Dec. 2019,
                 doi:10.3389/fgene.2019.01205
         """
-        super(IntegrationCNCVAE, self).__init__()
+        super(IntegrationEncoderCNCVAE, self).__init__()
 
         self.data_size = data_size
         self.dense_units = dense_units

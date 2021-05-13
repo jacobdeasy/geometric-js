@@ -47,14 +47,14 @@ def get_dataset(dataset: str) -> Dataset:
         raise ValueError(f"Unkown dataset: {dataset}")
 
 
-# def get_img_size(dataset: str) -> Tuple:
-#     """Return the correct image size."""
-#     return get_dataset(dataset).img_size
+def get_img_size(dataset: str) -> Tuple:
+    """Return the correct image size."""
+    return get_dataset(dataset).img_size
 
 
-# def get_background(dataset):
-#     """Return the image background color."""
-#     return get_dataset(dataset).background_color
+def get_background(dataset):
+    """Return the image background color."""
+    return get_dataset(dataset).background_color
 
 
 def get_dataloaders(dataset: str,

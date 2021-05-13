@@ -2,10 +2,10 @@
 
 import abc
 import torch
-import pdb
 
 from torch import optim
 from torch.nn import functional as F
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from .discriminator import Discriminator
 from vae.utils.math import (log_density_gaussian, log_importance_weight_matrix,
@@ -18,7 +18,6 @@ LOSSES = ["VAE", "KL", "fwdKL", "KLtrainbeta", "GJS", "dGJS",
 RECON_DIST = ["bernoulli", "laplace", "gaussian"]
 
 
-# TO-DO: clean n_data and device
 def get_loss_f(loss_name, **kwargs_parse):
     """Return the correct loss function given the argparse arguments."""
     kwargs_all = dict(rec_dist=kwargs_parse["rec_dist"],
@@ -93,7 +92,8 @@ def get_loss_f(loss_name, **kwargs_parse):
 
 
 class BaseLoss(abc.ABC):
-    r"""Base class for losses.
+    r"""
+    Base class for losses.
 
     Parameters
     ----------
@@ -110,8 +110,12 @@ class BaseLoss(abc.ABC):
         Number of annealing steps where gradually adding the regularisation.
     """
 
-    def __init__(self, record_loss_every=938, rec_dist="bernoulli",
-                 steps_anneal=0, **kwargs):
+    def __init__(self,
+                 record_loss_every: Optional[int] = 938,
+                 rec_dist: Optional[str] = "bernoulli",
+                 steps_anneal: Optional[int] = 0,
+                 **kwargs: Optional[Any]
+                 ) -> None:
         super().__init__(**kwargs)
         self.n_train_steps = 0
         self.record_loss_every = record_loss_every
@@ -119,8 +123,14 @@ class BaseLoss(abc.ABC):
         self.steps_anneal = steps_anneal
 
     @abc.abstractmethod
-    def __call__(self, data, recon_data, latent_dist, is_train, storer,
-                 **kwargs):
+    def __call__(self,
+                 data: torch.Tensor,
+                 recon_data: torch.Tensor,
+                 latent_dist: Tuple[torch.Tensor, torch.Tensor],
+                 is_train: bool,
+                 storer: Dict,
+                 **kwargs: Optional[Any]
+                 ) -> None:
         r"""
         Calculates loss for a batch of data.
 
@@ -147,7 +157,10 @@ class BaseLoss(abc.ABC):
             Loss specific arguments
         """
 
-    def _pre_call(self, is_train, storer):
+    def _pre_call(self,
+                  is_train: bool,
+                  storer: Dict
+                  ) -> Dict:
         if is_train:
             self.n_train_steps += 1
 
@@ -160,7 +173,7 @@ class BaseLoss(abc.ABC):
 
 
 class BetaHLoss(BaseLoss):
-    """
+    r"""
     Compute the Beta-VAE loss as in [1]
 
     Parameters
@@ -181,13 +194,23 @@ class BetaHLoss(BaseLoss):
         with a constrained variational framework." (2016).
     """
 
-    def __init__(self, beta=4, fwd_kl=False, **kwargs):
+    def __init__(self,
+                 beta: Optional[float] = 4.0,
+                 fwd_kl: Optional[bool] = False,
+                 **kwargs: Optional[Any]
+                 ) -> None:
         super().__init__(**kwargs)
         self.beta = beta
         self.fwd_kl = fwd_kl
 
-    def __call__(self, data, recon_data, latent_dist, is_train, storer,
-                 **kwargs):
+    def __call__(self,
+                 data: torch.Tensor,
+                 recon_data: torch.Tensor,
+                 latent_dist: Tuple[torch.Tensor, torch.Tensor],
+                 is_train: bool,
+                 storer: Dict,
+                 **kwargs: Optional[Any]
+                 ) -> None:
         storer = self._pre_call(is_train, storer)
 
         rec_loss = _reconstruction_loss(data, recon_data,
@@ -196,58 +219,19 @@ class BetaHLoss(BaseLoss):
         mean, logvar = latent_dist
 
         if self.fwd_kl:
-            kl_loss = _kl_normal_loss(torch.zeros_like(mean), torch.zeros_like(logvar), mean, logvar, storer=storer)
+            kl_loss = _kl_normal_loss(
+                m_1=torch.zeros_like(mean),
+                lv_1=torch.zeros_like(logvar),
+                m_2=mean,
+                lv_2=logvar,
+                storer=storer)
         else:
-            kl_loss = _kl_normal_loss(mean, logvar, torch.zeros_like(mean), torch.zeros_like(logvar), storer=storer)
-
-        loss = rec_loss + self.beta * kl_loss
-
-        if storer is not None:
-            storer['loss'].append(loss.item())
-
-        return loss, rec_loss
-
-
-class BVAETrainBeta(BaseLoss):
-    """
-    Compute the Beta-VAE loss as in [1]
-
-    Parameters
-    ----------
-    beta : float, optional
-        Weight of the kl divergence.
-
-    fwd_kl : bool, optional
-        Whether to switch to forward KL divergence.
-        Normal VAEs, from the ELBo, use reverse.
-
-    kwargs:
-        Additional arguments for `BaseLoss`, e.g. `rec_dist`.
-
-    References
-    ----------
-        [1] Higgins, Irina, et al. "beta-vae: Learning basic visual concepts
-        with a constrained variational framework." (2016).
-    """
-
-    def __init__(self, beta=4, fwd_kl=False, device=None, **kwargs):
-        super().__init__(**kwargs)
-        self.beta = torch.nn.Parameter(torch.tensor([beta]).to(device))
-        self.fwd_kl = fwd_kl
-
-    def __call__(self, data, recon_data, latent_dist, is_train, storer,
-                 **kwargs):
-        storer = self._pre_call(is_train, storer)
-
-        rec_loss = _reconstruction_loss(data, recon_data,
-                                        storer=storer,
-                                        distribution=self.rec_dist)
-        mean, logvar = latent_dist
-
-        if self.fwd_kl:
-            kl_loss = _kl_normal_loss(torch.zeros_like(mean), torch.zeros_like(logvar), mean, logvar, storer=storer)
-        else:
-            kl_loss = _kl_normal_loss(mean, logvar, torch.zeros_like(mean), torch.zeros_like(logvar), storer=storer)
+            kl_loss = _kl_normal_loss(
+                m_1=mean,
+                lv_1=logvar,
+                m_2=torch.zeros_like(mean),
+                lv_2=torch.zeros_like(logvar),
+                storer=storer)
 
         loss = rec_loss + self.beta * kl_loss
 
@@ -616,15 +600,15 @@ class GeometricJSLossTrainableAlpha(BaseLoss, torch.nn.Module):
         Advances in Neural Information Processing Systems 33 (2020).
     """
 
-    def __init__(self, alpha=None, beta=1.0, dual=True, invert_alpha=True, device=None, **kwargs):
+    def __init__(self, alpha=None, beta=1.0, dual=True, invert_alpha=True,
+                 device=None, **kwargs):
         super(GeometricJSLossTrainableAlpha, self).__init__(**kwargs)
-    
-        if alpha is not None:
-            self.alpha = torch.nn.Parameter(torch.tensor([alpha]).to(device))
 
+        if alpha is not None:
+            self.alpha = torch.nn.Parameter(torch.tensor(alpha).to(device))
         else:
             self.alpha = torch.nn.Parameter(torch.rand(1).to(device))
-            
+
         self.mean_prior = None
         self.logvar_prior = None
         self.beta = beta
@@ -821,15 +805,12 @@ def _kl_normal_loss(m_1, lv_1, m_2, lv_2, term='', storer=None):
         storer['kl_loss' + str(term)] += [total_kl.item()]
         for i in range(latent_dim):
             storer['kl_loss' + str(term) + f'_{i}'] += [latent_kl[i].item()]
-    
+
     return total_kl
 
 
 def _get_mu_var(m_1, v_1, m_2, v_2, a=0.5, storer=None):
-    """
-    Get mean and standard deviation of geometric mean distribution.
-    """
-    
+    """Get mean and standard deviation of geometric mean distribution."""
     v_a = 1 / ((1 - a) / v_1 + a / v_2)
     m_a = v_a * ((1 - a) * m_1 / v_1 + a * m_2 / v_2)
 
@@ -838,7 +819,6 @@ def _get_mu_var(m_1, v_1, m_2, v_2, a=0.5, storer=None):
 
 def _gjs_normal_loss(mean, logvar, dual=False, a=0.5, invert_alpha=True,
                      storer=None, record_alpha_range=False):
-    
     # Calculate the mean and variation of the intermediate distribution using 
     # the mean and variance - *not* the logvar which is passed to the function
     var = logvar.exp()
@@ -847,24 +827,28 @@ def _gjs_normal_loss(mean, logvar, dual=False, a=0.5, invert_alpha=True,
     # latent space
     mean_0 = torch.zeros_like(mean)
     var_0 = torch.ones_like(var)
-    
+
     if invert_alpha:
         mean_a, var_a = _get_mu_var(mean, var, mean_0, var_0, a=1 - a, storer=storer)
     else:
         mean_a, var_a = _get_mu_var(mean, var, mean_0, var_0, a=a, storer=storer)
-    
-    # Calculate the KL terms using the logvar rather than variance - for convenience
-    # of writing the expression:
+
+    # Calculate the KL terms using the logvar rather than variance - for
+    # convenience of writing the expression:
     var_a = torch.log(var_a)
     var_0 = torch.log(var_0)
     var = torch.log(var)
 
     if dual:
-        kl_1 = _kl_normal_loss(mean_a, var_a, mean, var, term=1, storer=storer)
-        kl_2 = _kl_normal_loss(mean_a, var_a, mean_0, var_0, term=2, storer=storer)
+        kl_1 = _kl_normal_loss(
+            mean_a, var_a, mean, var, term=1, storer=storer)
+        kl_2 = _kl_normal_loss(
+            mean_a, var_a, mean_0, var_0, term=2, storer=storer)
     else:
-        kl_1 = _kl_normal_loss(mean, var, mean_a, var_a, term=1, storer=storer)
-        kl_2 = _kl_normal_loss(mean_0, var_0, mean_a, var_a, term=2, storer=storer)
+        kl_1 = _kl_normal_loss(
+            mean, var, mean_a, var_a, term=1, storer=storer)
+        kl_2 = _kl_normal_loss(
+            mean_0, var_0, mean_a, var_a, term=2, storer=storer)
 
     total_gjs = (1 - a) * kl_1 + a * kl_2
 

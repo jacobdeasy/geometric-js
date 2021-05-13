@@ -4,3 +4,4 @@ figs/
 results/
 *__pycache__*
 data/
+logs/

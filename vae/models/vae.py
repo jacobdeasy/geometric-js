@@ -30,11 +30,17 @@ class VAE(nn.Module):
         self.latent_dim = latent_dim
         self.img_size = img_size
         self.num_pixels = self.img_size[1] * self.img_size[2]
-        
+
         if encoding_type == 'IntegrativeCNCVAE':
-            self.encoder = IntegrationEncoderCNCVAE(data_size=img_size, dense_layer_size=dense_size, latent_dim=latent_dim)
-            self.decoder = IntegrationEncoderCNCVAE(data_size=img_size, dense_layer_size=dense_size, latent_dim=latent_dim)
-        elif decode_type == 'TamingVAEs':
+            self.encoder = IntegrationEncoderCNCVAE(
+                data_size=img_size,
+                dense_units=dense_size,
+                latent_dim=latent_dim)
+            self.decoder = IntegrationEncoderCNCVAE(
+                data_size=img_size,
+                dense_units=dense_size,
+                latent_dim=latent_dim)
+        elif encoding_type == 'TamingVAEs':
             self.encoder = EncoderBurgess(img_size, self.latent_dim)
             self.decoder = DecoderRezendeViola(img_size, self.latent_dim)
         else:
