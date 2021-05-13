@@ -64,6 +64,12 @@ def parse_arguments(args_to_parse: List):
     training.add_argument('--lr', '--learning-rate',
                           type=float, default=1e-4,
                           help='Learning rate.')
+    training.add_argument('--noise',
+                          type=float, default=None,
+                          help='Added noise to input images.')
+    training.add_argument('--denoise',
+                          type=bool, default=False,
+                          help='Whether to use clean images as targets.')
 
     # Model Options
     model = parser.add_argument_group('Model specfic options')
@@ -196,12 +202,20 @@ def main(args: argparse.Namespace):
                             n_data=len(train_loader.dataset),
                             device=device,
                             **vars(args))
+
+        if args.loss in ['tdGJS', 'tGJS']:
+            loss_optimizer = optim.Adam(loss_f.parameters(), lr=args.lr)
+        else:
+            loss_optimizer = None
+        print(loss_optimizer)
         trainer = Trainer(model, optimizer, loss_f,
                           device=device,
                           logger=logger,
                           save_dir=exp_dir,
                           is_progress_bar=not args.no_progress_bar,
-                          gif_visualizer=gif_visualizer)
+                          gif_visualizer=gif_visualizer,
+                          loss_optimizer=loss_optimizer,
+                          denoise=args.denoise)
         trainer(train_loader,
                 epochs=args.epochs,
                 checkpoint_every=args.checkpoint_every,)

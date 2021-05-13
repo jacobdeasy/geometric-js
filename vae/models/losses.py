@@ -3,7 +3,7 @@
 import abc
 import torch
 
-from torch import optim
+from torch import optim, Tensor
 from torch.nn import functional as F
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -173,20 +173,7 @@ class BaseLoss(abc.ABC):
 
 
 class BetaHLoss(BaseLoss):
-    r"""
-    Compute the Beta-VAE loss as in [1]
-
-    Parameters
-    ----------
-    beta : float, optional
-        Weight of the kl divergence.
-
-    fwd_kl : bool, optional
-        Whether to switch to forward KL divergence.
-        Normal VAEs, from the ELBo, use reverse.
-
-    kwargs:
-        Additional arguments for `BaseLoss`, e.g. `rec_dist`.
+    r"""Compute the Beta-VAE loss as in [1]
 
     References
     ----------
@@ -197,7 +184,7 @@ class BetaHLoss(BaseLoss):
     def __init__(self,
                  beta: Optional[float] = 4.0,
                  fwd_kl: Optional[bool] = False,
-                 **kwargs: Optional[Any]
+                 **kwargs: Optional[Dict]
                  ) -> None:
         super().__init__(**kwargs)
         self.beta = beta
@@ -576,23 +563,6 @@ class GeometricJSLoss(BaseLoss):
 class GeometricJSLossTrainableAlpha(BaseLoss, torch.nn.Module):
     r"""Compute VAE loss with skew geometric-Jensen-Shannon regularisation [1].
 
-    Parameters
-    ----------
-    alpha : float, optional
-        Skew of the skew geometric-Jensen-Shannon divergence
-
-    beta : float, optional
-        Weight of the skew g-js divergence.
-
-    dual : bool, optional
-        Whether to use Dual or standard GJS.
-
-    invert_alpha : bool, optional
-        Whether to replace alpha with 1 - a.
-
-    kwargs:
-        Additional arguments for `BaseLoss`, e.g. `rec_dist`.
-
     References
     ----------
         [1] Deasy, Jacob, Nikola Simidjievski, and Pietro Liò.
@@ -600,26 +570,38 @@ class GeometricJSLossTrainableAlpha(BaseLoss, torch.nn.Module):
         Advances in Neural Information Processing Systems 33 (2020).
     """
 
-    def __init__(self, alpha=None, beta=1.0, dual=True, invert_alpha=True,
-                 device=None, **kwargs):
+    def __init__(self,
+                 alpha: Optional[float] = None,
+                 beta: Optional[float] = 1.0,
+                 dual: Optional[bool] = True,
+                 invert_alpha: Optional[bool] = True,
+                 device: Optional[torch.device] = None,
+                 **kwargs: Optional[Dict]
+                 ) -> None:
         super(GeometricJSLossTrainableAlpha, self).__init__(**kwargs)
 
         if alpha is not None:
             self.alpha = torch.nn.Parameter(torch.tensor(alpha).to(device))
         else:
             self.alpha = torch.nn.Parameter(torch.rand(1).to(device))
-
-        self.mean_prior = None
-        self.logvar_prior = None
         self.beta = beta
         self.dual = dual
         self.invert_alpha = invert_alpha
         self.device = device
 
-    def __call__(self, data, recon_data, latent_dist, is_train, storer, record_alpha_range=False,
+        self.mean_prior = None
+        self.logvar_prior = None
+
+    def __call__(self,
+                 data,
+                 recon_data,
+                 latent_dist,
+                 is_train,
+                 storer,
+                 record_alpha_range=False,
                  **kwargs):
         storer = self._pre_call(is_train, storer)
-        
+
         rec_loss = _reconstruction_loss(data, recon_data,
                                         storer=storer,
                                         distribution=self.rec_dist)
@@ -774,29 +756,15 @@ def _reconstruction_loss(data, recon_data, distribution="bernoulli",
     return loss
 
 
-def _kl_normal_loss(m_1, lv_1, m_2, lv_2, term='', storer=None):
-    """
-    Calculates the KL divergence between two normal distributions
-    with diagonal covariance matrices.
-
-    Parameters
-    ----------
-    m_1 : torch.Tensor
-        Mean of normal distribution 1. Shape (B, D) where
-        D is dimension of distribution.
-
-    lv_1 : torch.Tensor
-        Diagonal log variance of normal distribution 1. Shape (B, D).
-
-    m_2 : torch.Tensor
-        Mean of normal distribution 2. Shape (B, D).
-
-    lv_2 : torch.Tensor
-        Diagonal log variance of normal distribution 2. Shape (B, D)
-
-    storer : dict
-        Dictionary in which to store important variables for vizualisation.
-    """
+def _kl_normal_loss(m_1: torch.Tensor,
+                    lv_1: torch.Tensor,
+                    m_2: torch.Tensor,
+                    lv_2: torch.Tensor,
+                    term: Optional[str] = '',
+                    storer: Optional[Dict] = None
+                    ) -> torch.Tensor:
+    """Calculates the KL divergence between two normal distributions
+    with diagonal covariance matrices."""
     latent_dim = m_1.size(1)
     latent_kl = 0.5 * (-1 + (lv_2 - lv_1) + lv_1.exp() / lv_2.exp() + (m_2 - m_1).pow(2) / lv_2.exp()).mean(dim=0)
     total_kl = latent_kl.sum()
@@ -819,22 +787,17 @@ def _get_mu_var(m_1, v_1, m_2, v_2, a=0.5, storer=None):
 
 def _gjs_normal_loss(mean, logvar, dual=False, a=0.5, invert_alpha=True,
                      storer=None, record_alpha_range=False):
-    # Calculate the mean and variation of the intermediate distribution using 
-    # the mean and variance - *not* the logvar which is passed to the function
     var = logvar.exp()
-
-    # Define the unit variance gaussian to which we want to constrain the
-    # latent space
     mean_0 = torch.zeros_like(mean)
     var_0 = torch.ones_like(var)
 
     if invert_alpha:
-        mean_a, var_a = _get_mu_var(mean, var, mean_0, var_0, a=1 - a, storer=storer)
+        mean_a, var_a = _get_mu_var(
+            mean, var, mean_0, var_0, a=1-a, storer=storer)
     else:
-        mean_a, var_a = _get_mu_var(mean, var, mean_0, var_0, a=a, storer=storer)
+        mean_a, var_a = _get_mu_var(
+            mean, var, mean_0, var_0, a=a, storer=storer)
 
-    # Calculate the KL terms using the logvar rather than variance - for
-    # convenience of writing the expression:
     var_a = torch.log(var_a)
     var_0 = torch.log(var_0)
     var = torch.log(var)
@@ -859,8 +822,8 @@ def _gjs_normal_loss(mean, logvar, dual=False, a=0.5, invert_alpha=True,
         if invert_alpha:
             storer_label += '_invert'
         storer[storer_label] += [total_gjs.item()]
-    
-        # Record what the alpha landscape looks like if record_alpha_range is true
+
+        # Record what the alpha landscape looks like if record_alpha_range
         if record_alpha_range:
             storer_label = 'gjs_loss'
             if dual:
@@ -869,72 +832,41 @@ def _gjs_normal_loss(mean, logvar, dual=False, a=0.5, invert_alpha=True,
                 storer_label += '_invert'
             with torch.no_grad():
                 for i in range(101):
-                    gjs = calculate_gjs(mean, logvar, dual=False, a=i/100, invert_alpha=True)
+                    gjs = calculate_gjs(
+                        mean, logvar,
+                        dual=False, a=i/100, invert_alpha=True)
                     storer[f"storer_label_alpha_test={i/100}"] += [gjs.item()]
 
-
     return total_gjs
 
 
-def calculate_gjs(mean, logvar, dual=False, a=0.5, invert_alpha=True):
-    """
-    Same function as _gjs_normal_loss except the gjs loss value is not
-    automatically stored to the training logger.
-    """
-    
-    var = logvar.exp()
-
-    # Define the unit variance gaussian to which we want to constrain the
-    # latent space
-    mean_0 = torch.zeros_like(mean)
-    var_0 = torch.ones_like(var)
-    
-    if invert_alpha:
-        mean_a, var_a = _get_mu_var(mean, var, mean_0, var_0, a=1 - a)
-    else:
-        mean_a, var_a = _get_mu_var(mean, var, mean_0, var_0, a=a)
-    
-    # Calculate the KL terms using the logvar rather than variance - for convenience
-    # of writing the expression:
-    var_a = torch.log(var_a)
-    var_0 = torch.log(var_0)
-    var = torch.log(var)
-
-    if dual:
-        kl_1 = _kl_normal_loss(mean_a, var_a, mean, var, term=1)
-        kl_2 = _kl_normal_loss(mean_a, var_a, mean_0, var_0, term=2)
-    else:
-        kl_1 = _kl_normal_loss(mean, var, mean_a, var_a, term=1)
-        kl_2 = _kl_normal_loss(mean_0, var_0, mean_a, var_a, term=2)
-
-    total_gjs = (1 - a) * kl_1 + a * kl_2
-    return total_gjs
-
-
-def _gjs_normal_loss_train_prior(mean, logvar, mean_prior, logvar_prior, dual=False, a=0.5, invert_alpha=True,
-                     storer=None):
+def _gjs_normal_loss_train_prior(
+        mean, logvar, mean_prior, logvar_prior,
+        dual=False, a=0.5, invert_alpha=True, storer=None):
     var = logvar.exp()
     var_prior = logvar_prior.exp()
 
-    # Calculate the mean and variation of the intermediate distribution using 
-    # the mean and variance - *not* the logvar which is passed to the function
     if invert_alpha:
-        mean_a, var_a = _get_mu_var(mean, var, mean_prior, var_prior, a=1 - a, storer=storer)
+        mean_a, var_a = _get_mu_var(
+            mean, var, mean_prior, var_prior, a=1 - a, storer=storer)
     else:
-        mean_a, var_a = _get_mu_var(mean, var, mean_prior, var_prior, a=a, storer=storer)
-    
-    # Calculate the KL terms using the logvar rather than variance - for convenience
-    # of writing the expression:
+        mean_a, var_a = _get_mu_var(
+            mean, var, mean_prior, var_prior, a=a, storer=storer)
+
     var_a = torch.log(var_a)
     var = torch.log(var)
     var_prior = torch.log(var_prior)
 
     if dual:
-        kl_1 = _kl_normal_loss(mean_a, var_a, mean, var, term=1, storer=storer)
-        kl_2 = _kl_normal_loss(mean_a, var_a, mean_prior, var_prior, term=2, storer=storer)
+        kl_1 = _kl_normal_loss(
+            mean_a, var_a, mean, var, term=1, storer=storer)
+        kl_2 = _kl_normal_loss(
+            mean_a, var_a, mean_prior, var_prior, term=2, storer=storer)
     else:
-        kl_1 = _kl_normal_loss(mean, var, mean_a, var_a, term=1, storer=storer)
-        kl_2 = _kl_normal_loss(mean_prior, var_prior, mean_a, var_a, term=2, storer=storer)
+        kl_1 = _kl_normal_loss(
+            mean, var, mean_a, var_a, term=1, storer=storer)
+        kl_2 = _kl_normal_loss(
+            mean_prior, var_prior, mean_a, var_a, term=2, storer=storer)
 
     total_gjs = (1 - a) * kl_1 + a * kl_2
 
@@ -949,23 +881,11 @@ def _gjs_normal_loss_train_prior(mean, logvar, mean_prior, logvar_prior, dual=Fa
     return total_gjs
 
 
-def _mmd_loss(mean, logvar, storer=None):
-    """
-    Calculates the maximum mean discrepancy between latent distributions.
-
-    Parameters
-    ----------
-    mean : torch.Tensor
-        Mean of the normal distribution. Shape (batch_size, latent_dim) where
-        D is dimension of distribution.
-
-    logvar : torch.Tensor
-        Diagonal log variance of the normal distribution. Shape (batch_size,
-        latent_dim)
-
-    storer : dict
-        Dictionary in which to store important variables for vizualisation.
-    """
+def _mmd_loss(mean: Tensor,
+              logvar: Tensor,
+              storer: Optional[Dict] = None
+              ) -> Tensor:
+    """Calculates the maximum mean discrepancy between latent distributions."""
     _, latent_dim = mean.shape
     z = torch.cat((mean, logvar), axis=1)
 
@@ -983,19 +903,8 @@ def _mmd_loss(mean, logvar, storer=None):
     return mmd
 
 
-def _compute_kernel(x, y):
-    """
-    Calculate kernel for maximum mean discrepancy loss.
-
-    Parameters
-    ----------
-    x : torch.Tensor
-
-    y : torch.Tensor
-
-    storer : dict
-        Dictionary in which to store important variables for vizualisation.
-    """
+def _compute_kernel(x: Tensor, y: Tensor) -> Tensor:
+    """Calculate kernel for maximum mean discrepancy loss."""
     x_size = x.size(0)
     y_size = y.size(0)
     dim = x.size(1)

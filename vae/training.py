@@ -3,11 +3,11 @@
 import logging
 import os
 import torch
-import pdb
 
 from collections import defaultdict
 from timeit import default_timer
 from tqdm import trange
+from typing import Any, Dict, Optional, Tuple
 
 from vae.utils.modelIO import save_model
 
@@ -16,74 +16,41 @@ TRAIN_LOSSES_LOGFILE = "train_losses.log"
 
 
 class Trainer():
-    """Class to handle training of model.
 
-    Parameters
-    ----------
-    model: disvae.vae.VAE
-
-    optimizer: torch.optim.Optimizer
-
-    loss_f: disvae.models.BaseLoss
-        Loss function.
-
-    device: torch.device, optional
-        Device on which to run the code.
-
-    logger: logging.Logger, optional
-        Logger.
-
-    save_dir : str, optional
-        Directory for saving logs.
-
-    gif_visualizer : viz.Visualizer, optional
-        Gif Visualizer that should return samples at every epochs.
-
-    is_progress_bar: bool, optional
-        Whether to use a progress bar for training.
-    """
-
-    def __init__(self, model, optimizer, loss_f,
-                 device=torch.device("cpu"),
-                 logger=logging.getLogger(__name__),
-                 save_dir="results",
-                 gif_visualizer=None,
-                 is_progress_bar=True,
-                 loss_optimizer=None,
-                 denoise=False,
-                 record_alpha_range=False):
-
-        self.device = device
-        self.model = model.to(self.device)
-        self.loss_f = loss_f
+    def __init__(self,
+                 model: Any,
+                 optimizer: torch.optim.Optimizer,
+                 loss_f: Any,
+                 device: Optional[torch.device] = torch.device("cpu"),
+                 logger: Optional[logging.Logger] = logging.getLogger(__name__),
+                 save_dir: Optional[str] = "results",
+                 gif_visualizer: Optional[Any] = None,
+                 is_progress_bar: Optional[bool] = True,
+                 loss_optimizer: Optional[bool] = None,
+                 denoise: Optional[bool] = False,
+                 record_alpha_range: Optional[bool] = False
+                 ) -> None:
+        self.model = model.to(device)
         self.optimizer = optimizer
-        self.save_dir = save_dir
-        self.is_progress_bar = is_progress_bar
+        self.loss_f = loss_f
+        self.device = device
         self.logger = logger
-        self.losses_logger = LossesLogger(
-            os.path.join(self.save_dir, TRAIN_LOSSES_LOGFILE))
+        self.save_dir = save_dir
         self.gif_visualizer = gif_visualizer
-        self.logger.info(f"Training Device: {self.device}")
+        self.is_progress_bar = is_progress_bar
         self.loss_optimizer = loss_optimizer
         self.denoise = denoise
-        self.record_alpha_range=record_alpha_range
+        self.record_alpha_range = record_alpha_range
 
-    def __call__(self, data_loader,
-                 epochs=10,
-                 checkpoint_every=10):
-        """
-        Trains the model.
+        self.losses_logger = LossesLogger(
+            os.path.join(self.save_dir, TRAIN_LOSSES_LOGFILE))
+        self.logger.info(f"Training Device: {self.device}")
 
-        Parameters
-        ----------
-        data_loader: torch.utils.data.DataLoader
-
-        epochs: int, optional
-            Number of epochs to train the model for.
-
-        checkpoint_every: int, optional
-            Save a checkpoint of the trained model every n epoch.
-        """
+    def __call__(self,
+                 data_loader: torch.utils.data.DataLoader,
+                 epochs: Optional[int] = 10,
+                 checkpoint_every: Optional[int] = 10
+                 ) -> None:
         start = default_timer()
         self.model.train()
         for epoch in range(epochs):
@@ -91,12 +58,13 @@ class Trainer():
             avg_rec_loss = self._train_epoch(data_loader, storer, epoch)
             storer['recon_loss'] += [avg_rec_loss]
             self.logger.info(
-                f'Epoch: {epoch+1} Average reconstruction loss per image: {avg_rec_loss:.2f}')
+                f'Epoch: {epoch+1} Avg recon loss / image: {avg_rec_loss:.2f}')
             if self.loss_optimizer is not None:
-                self.losses_logger.log(epoch, storer, 
+                self.losses_logger.log(epoch,
+                                       storer,
                                        alpha_parameter=self.loss_f.alpha,
-                                       mean = self.loss_f.mean_prior,
-                                       logvar = self.loss_f.logvar_prior)
+                                       mean=self.loss_f.mean_prior,
+                                       logvar=self.loss_f.logvar_prior)
             else:
                 self.losses_logger.log(epoch, storer)
 
@@ -117,136 +85,68 @@ class Trainer():
         dt = (default_timer() - start) / 60
         self.logger.info(f'Finished training after {dt:.1f} min.')
 
-    def _train_epoch(self, data_loader, storer, epoch):
-        """
-        Trains the model for one epoch.
-
-        Parameters
-        ----------
-        data_loader: torch.utils.data.DataLoader
-
-        storer: dict
-            Dictionary in which to store important variables for vizualisation.
-
-        epoch: int
-            Epoch number
-
-        Return
-        ------
-        mean_epoch_loss: float
-            Mean loss per image
-        """
+    def _train_epoch(self,
+                     data_loader: torch.utils.data.DataLoader,
+                     storer: Dict,
+                     epoch: int
+                     ) -> float:
         epoch_rec_loss = 0.
         kwargs = dict(desc=f"Epoch {epoch+1}", leave=False,
                       disable=not self.is_progress_bar)
-        if self.denoise:
-            # If denoising experiment need to calculate the reconstruction error
-            # by comparing the output of the vae decocer with the clean (non-noisy)
-            # input.
-            with trange(len(data_loader), **kwargs) as t:
+
+        with trange(len(data_loader), **kwargs) as t:
+            if self.denoise:
+                # If denoising experiment, calculate the reconstruction error
+                # by comparing the output of the vae decoder with clean
                 for _, (noisy_data, clean_data) in enumerate(data_loader):
 
-                    iter_loss, iter_rec_loss = self._train_iteration(data=noisy_data, storer=storer, clean_data=clean_data)
+                    iter_loss, iter_rec_loss = self._train_iteration(
+                        data=noisy_data, storer=storer, clean_data=clean_data)
                     epoch_rec_loss += iter_rec_loss
                     t.set_postfix(loss=iter_rec_loss)
                     t.update()
-
-            mean_epoch_rec_loss = epoch_rec_loss / len(data_loader)
-        else:
-            with trange(len(data_loader), **kwargs) as t:
-                for _, (data, _) in enumerate(data_loader):
-                    iter_loss, iter_rec_loss = self._train_iteration(data, storer)
-                    epoch_rec_loss += iter_rec_loss
-                    t.set_postfix(loss=iter_rec_loss)
-                    t.update()
-
-            mean_epoch_rec_loss = epoch_rec_loss / len(data_loader)
-
-        return mean_epoch_rec_loss
-
-    def _train_iteration(self, data, storer, clean_data=None):
-        """
-        ->  Trains the model for one iteration on a batch of data.
-        ->  If the loss function passed in the initialisation of the
-            Trainer class has trainable parameters then these parameters
-            are iterated by this function in addition to the model
-            parameters.
-        ->  If a noise de-noising experiment is being carried out then
-            the reconstruction loss is calculated by comparing the output
-            of the VAE decoder with the input image without noise added. In
-            this case, a clean batch of images with no noise added is also
-            passed via the clean_data parameter.
-
-        Parameters
-        ----------
-        data: torch.Tensor
-            A batch of data. Shape : (batch_size, channel, height, width).
-
-        storer: dict
-            Dictionary in which to store important variables for vizualisation.
-
-        clean_data: torch.Tensor
-            A batch of data without added noise.
-            Shape : (batch_size, channel, height, width).
-        """
-
-        batch_size, channel, height, width = data.size()
-        data = data.to(self.device)
-        if clean_data != None:
-            clean_data = clean_data.to(self.device)
-        
-        try:
-            if clean_data == None:
-                # Iterate loss parameters if a loss optimiser is passed:
-                if self.loss_optimizer is not None:
-                    recon_batch, latent_dist, latent_sample = self.model(data)
-                    loss, rec_loss = self.loss_f(
-                        data, recon_batch, latent_dist, self.model.training, storer, record_alpha_range=self.record_alpha_range,
-                        latent_sample=latent_sample)
-                    self.loss_optimizer.zero_grad()
-                    self.optimizer.zero_grad()
-                    loss.backward()
-                    self.loss_optimizer.step()
-                    self.optimizer.step()
-                    with torch.no_grad():
-                        if hasattr(self.loss_f, 'alpha'):
-                            self.loss_f.alpha.clamp_(0, 1)
-                else:
-                    recon_batch, latent_dist, latent_sample = self.model(data)
-                    loss, rec_loss = self.loss_f(
-                        data, recon_batch, latent_dist, self.model.training, storer,
-                        latent_sample=latent_sample)
-                    self.optimizer.zero_grad()
-                    loss.backward()
-                    self.optimizer.step()
-
             else:
-                # Iterate loss parameters if a loss optimiser is passed:
-                if self.loss_optimizer is not None:
-                    recon_batch, latent_dist, latent_sample = self.model(data)
-                    loss, rec_loss = self.loss_f(
-                        clean_data, recon_batch, latent_dist, self.model.training, storer,
-                        latent_sample=latent_sample)
-                    self.optimizer.zero_grad()
-                    self.loss_optimizer.zero_grad()
-                    loss.backward()
-                    self.optimizer.step()
-                    self.loss_optimizer.step()
-                    with torch.no_grad():
-                        if hasattr(self.loss_f, 'alpha'):
-                            self.loss_f.alpha.clamp_(0, 1)
-                else:
-                    recon_batch, latent_dist, latent_sample = self.model(data)
-                    
-                    loss, rec_loss = self.loss_f(
-                        clean_data, recon_batch, latent_dist, self.model.training, storer,
-                        latent_sample=latent_sample)
-                    self.optimizer.zero_grad()
-                    loss.backward()
-                    self.optimizer.step()
+                for _, (data, _) in enumerate(data_loader):
+                    iter_loss, iter_rec_loss = self._train_iteration(
+                        data, storer)
+                    epoch_rec_loss += iter_rec_loss
+                    t.set_postfix(loss=iter_rec_loss)
+                    t.update()
+
+        return epoch_rec_loss / len(data_loader)
+
+    def _train_iteration(self,
+                         data: torch.Tensor,
+                         storer: Dict,
+                         clean_data: Optional[torch.Tensor] = None
+                         ) -> Tuple[float, float]:
+        batch_size, channel, height, width = data.size()
+        data_in = data.to(self.device)
+        if clean_data is not None:
+            data_out = clean_data.to(self.device)
+        else:
+            data_out = data.to(self.device)
+
+        try:
+            # Iterate loss parameters if a loss optimiser is passed:
+            recon_batch, latent_dist, latent_sample = self.model(data_in)
+            loss, rec_loss = self.loss_f(
+                data_out, recon_batch, latent_dist, self.model.training,
+                storer, record_alpha_range=self.record_alpha_range,
+                latent_sample=latent_sample)
+            if self.loss_optimizer is not None:
+                self.loss_optimizer.zero_grad()
+                with torch.no_grad():
+                    if hasattr(self.loss_f, 'alpha'):
+                        self.loss_f.alpha.clamp_(0, 1)
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+            if self.loss_optimizer is not None:
+                self.loss_optimizer.step()
 
         except ValueError:
-            # for losses that use multiple optimizers (e.g. Factor)
+            # For losses that use multiple optimizers (e.g. Factor)
             loss = self.loss_f.call_optimize(
                 data, self.model, self.optimizer, storer)
 
@@ -254,12 +154,8 @@ class Trainer():
 
 
 class LossesLogger(object):
-    """Class definition for objects to write data to log files in a
-    form which is then easy to be plotted.
-    """
 
     def __init__(self, file_path_name):
-        """ Create a logger to store information for plotting. """
         if os.path.isfile(file_path_name):
             os.remove(file_path_name)
 
@@ -268,12 +164,11 @@ class LossesLogger(object):
         file_handler = logging.FileHandler(file_path_name)
         file_handler.setLevel(1)
         self.logger.addHandler(file_handler)
-
         header = ",".join(["Epoch", "Loss", "Value"])
         self.logger.debug(header)
 
-    def log(self, epoch, losses_storer, alpha_parameter=None, mean=None, logvar=None):
-        """Write to the log file """
+    def log(self, epoch, losses_storer,
+            alpha_parameter=None, mean=None, logvar=None):
         for k, v in losses_storer.items():
             log_string = ",".join(
                 str(item) for item in [epoch, k, sum(v) / len(v)])

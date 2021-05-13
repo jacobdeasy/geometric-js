@@ -62,7 +62,7 @@ class BaseDivergence(abc.ABC):
         return self.normal(X, self.mean, self.covariance)
 
     def log_q(self, X: Tensor) -> Tensor:
-        return self.q(X).log()
+        return self.log_normal(X, self.mean, self.covariance)
 
     def normal(self, X: Tensor, m: Tensor, C: Tensor) -> Tensor:
         Z = X - m
@@ -105,7 +105,7 @@ class fwdKL(BaseDivergence, torch.nn.Module):
         self.logger.debug(header)
 
     def forward(self, X):
-        return torch.sum(self.q(X) * (self.log_q(X) - self.log_p(X)))
+        return torch.sum(self.log_q(X).exp() * (self.log_q(X) - self.log_p(X)))
 
     def log(self, epoch, av_divergence):
         """Write to the log file."""
@@ -230,14 +230,16 @@ class GJS(BaseDivergence, torch.nn.Module):
         self.logger.debug(header)
 
     def forward(self, sample_data):
+        qx = self.q(sample_data)
+        px = self.p(sample_data)
         if self.dual:
-            KL_1 = self.q(sample_data).pow(self.alpha) * self.p(sample_data).pow(1 - self.alpha) * (self.p(sample_data) / self.q(sample_data)).log()
-            KL_2 = self.q(sample_data).pow(self.alpha) * self.p(sample_data).pow(1 - self.alpha) * (self.q(sample_data) / self.p(sample_data)).log()
-            loss = ((1 - self.alpha) ** 2) * torch.sum(KL_1) + (self.alpha ** 2) * torch.sum(KL_2)
+            KL_1 = torch.sum(qx.pow(self.alpha) * px.pow(1 - self.alpha) * (px.log() - qx.log()))
+            KL_2 = torch.sum(qx.pow(self.alpha) * px.pow(1 - self.alpha) * (qx.log() - px.log()))
+            loss = ((1 - self.alpha) ** 2) * KL_1 + (self.alpha ** 2) * KL_2
         else:
-            KL_1 = self.q(sample_data) * (self.q(sample_data) / self.p(sample_data)).log()
-            KL_2 = self.p(sample_data) * (self.p(sample_data) / self.q(sample_data)).log()
-            loss = ((1 - self.alpha) ** 2) * torch.sum(KL_1) + (self.alpha ** 2) * torch.sum(KL_2)
+            KL_1 = torch.sum(qx * (qx.log() - px.log()))
+            KL_2 = torch.sum(px * (px.log() - qx.log()))
+            loss = ((1 - self.alpha) ** 2) * KL_1 + (self.alpha ** 2) * KL_2
         return loss
 
     def log(self, epoch, av_divergence):
@@ -284,17 +286,17 @@ class GJSTrainAlpha(BaseDivergence, torch.nn.Module):
         self.logger.debug(header)
 
     def forward(self, sample_data: torch.Tensor) -> torch.Tensor:
-        qx = self.q(sample_data)
-        px = self.p(sample_data)
+        lqx = self.log_q(sample_data)
+        lpx = self.log_p(sample_data)
         if self.dual:
             kl_1 = torch.mean(
-                qx ** self.a * px ** (1 - self.a) * (px.log() - qx.log()))
+                lqx.exp() ** self.a * lpx.exp() ** (1 - self.a) * (lpx - lqx))
             kl_2 = torch.mean(
-                qx ** self.a * px ** (1 - self.a) * (qx.log() - px.log()))
+                lqx.exp() ** self.a * lpx.exp() ** (1 - self.a) * (lqx - lpx))
             loss = (1 - self.a) ** 2 * kl_1 + self.a ** 2 * kl_2
         else:
-            kl_1 = torch.mean(qx * (px.log() - qx.log()))
-            kl_2 = torch.mean(px * (px.log() - qx.log()))
+            kl_1 = torch.mean(lqx.exp() * (lpx - lqx))
+            kl_2 = torch.mean(lpx.exp() * (lpx - lqx))
             loss = (1 - self.a) ** 2 * kl_1 + self.a ** 2 * kl_2
 
         return loss
@@ -448,7 +450,7 @@ def train_model(model,
     if learn_a:
         learnt_dist["alpha"] = str(model.a.item())
     elif hasattr(model, 'alpha'):
-        learnt_dist["alpha"] = str(model.a)
+        learnt_dist["alpha"] = str(model.alpha)
     for i, m in enumerate(model.mean.detach().numpy()):
         learnt_dist[f"mean_{i + 1}"] = str(m)
     for i, var in enumerate(model.covariance.diag().detach().numpy()):
@@ -505,6 +507,7 @@ def main(argv):
                f"-{args.num_mixture}-{args.lr}-{args.epochs}"
     log_loc = f"{args.train_log_output}/{args.seed}-{args.dimensions}" + \
               f"-{args.num_mixture}-{args.lr}-{args.epochs}"
+    name = f"{args.metric}"
 
     if not os.path.exists(plot_loc):
         os.makedirs(plot_loc)
@@ -527,6 +530,7 @@ def main(argv):
                               dual=args.metric == 'tdGJS',
                               train_data_file_path=log_loc,
                               alpha=args.A0)
+        name = f"{args.metric}-A_0={args.A0}"
 
     if args.metric == 'dGJS' or args.metric == 'GJS':
         print('Optimizing constant-alpha GJS divergence...')
@@ -567,7 +571,8 @@ def main(argv):
                 dimensions=args.dimensions,
                 epochs=args.epochs,
                 sample_size=args.sample_size,
-                name=f'tGJS-A_0={args.A0}', save_loc=plot_loc)
+                name=name,
+                save_loc=plot_loc)
 
 
 if __name__ == '__main__':
