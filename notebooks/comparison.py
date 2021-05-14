@@ -12,18 +12,15 @@ import numpy as np
 import numpy.random as nr
 import os
 import seaborn as sns
-from tqdm import tqdm
 import sys
-import pdb
 import theano as th
 import theano.sandbox.linalg as tl
 import theano.tensor as tt
 
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
-from scipy.optimize import minimize
 from time import time
 
-from notebooks.utils import PlotParams
+# from notebooks.utils import PlotParams
 
 sys.path.append('./code')
 mpl.use('Agg')
@@ -341,165 +338,72 @@ def fit_js(data, log_p, max_epochs=20):
 
     return a.get_value() * np.eye(D), b.get_value()
 
-# def fit_js(data, log_p, max_epochs=20):
-# 	"""
-# 	Fit isotropic Gaussian by minimizing Jensen-Shannon divergence.
-# 	"""
-
-# 	# data dimensionality
-# 	D = data.shape[0]
-
-# 	# data and hidden states
-# 	X = tt.dmatrix('X')
-# 	Z = tt.dmatrix('Z')
-
-# 	nr.seed(int(time() * 1000.) % 4294967295)
-# 	idx = nr.permutation(data.shape[1])[:100]
-
-# 	# initialize parameters
-# 	b = th.shared(np.mean(data[:, idx], 1)[:, None], broadcastable=(False, True))
-# 	a = th.shared(np.std(data[:, idx] - b.get_value()))
-
-# 	# model density
-# 	log_q = lambda X: -0.5 * tt.sum(tt.square((X - b) / a), 0) - D * tt.log(tt.abs_(a)) - D / 2. * np.log(np.pi)
-
-# 	G = lambda Z: a * Z + b
-
-# 	# Jensen-Shannon divergence
-# 	JSD = tt.mean(tt.log(tt.nnet.sigmoid(log_p(X) - log_q(X)))) \
-# 		+ tt.mean(tt.log(tt.nnet.sigmoid(log_q(G(Z)) - log_p(G(Z)))))
-# 	JSD = (JSD + np.log(4.)) / 2.
-
-# 	# function computing JSD and its gradient
-# 	f_jsd = th.function([Z, X], [JSD, th.grad(JSD, a), th.grad(JSD, b)])
-
-# 	# SGD hyperparameters
-# 	B = 200
-# 	mm = 0.8
-# 	lr = .5
-
-# 	da = 0.
-# 	db = 0.
-
-# 	try:
-# 		# display initial JSD
-# 		print('{0:>4} {1:.4f}'.format(0, float(f_jsd(nr.randn(*data.shape), data)[0])))
-
-# 		for epoch in range(max_epochs):
-# 			values = []
-
-# 			# stochastic gradient descent
-# 			for t in range(0, data.shape[1], B):
-# 				Z = nr.randn(D, B)
-# 				Y = data[:, t:t + B]
-
-# 				v, ga, gb = f_jsd(Z, Y)
-# 				da = mm * da - lr * ga
-# 				db = mm * db - lr * gb
-
-# 				values.append(v)
-
-# 				a.set_value(a.get_value() + da)
-# 				b.set_value(b.get_value() + db)
-
-# 			# reduce learning rate
-# 			lr /= 2.
-
-# 			# display estimated JSD
-# 			print('{0:>4} {1:.4f}'.format(epoch + 1, np.mean(values)))
-
-# 	except KeyboardInterrupt:
-# 		pass
-
-# 	return a.get_value() * np.eye(D), b.get_value()
-
 
 def fit_gjs_train_a(data, log_p, max_epochs=20):
-    """
-    Fit isotropic Gaussian by minimizing geometric Jensen-Shannon divergence.
-    """
-
-    # data dimensionality
+    """Fit isotropic Gaussian by minimizing GJS divergence."""
     D = data.shape[0]
 
-    # data and hidden states
+    # Data and hidden states
     X = tt.dmatrix('X')
     Z = tt.dmatrix('Z')
 
     nr.seed(int(time() * 1000.) % 4294967295)
     idx = nr.permutation(data.shape[1])[:100]
 
-    # initialize parameters
+    # Initialize parameters
     b = th.shared(np.mean(data[:, idx], 1)[:, None], broadcastable=(False, True))
     a = th.shared(np.std(data[:, idx] - b.get_value(), 1)[:, None], broadcastable=[False, True])
     alpha = th.shared(0.5)
-    
-    # model density
-    def q(X): return normal(X, b, a)
+
+    # Density and divergence
     def log_q(X): return -0.5 * tt.sum(tt.square((X - b) / a), 0) - D * tt.log(tt.abs_(a)) - D / 2. * np.log(np.pi)
-
     def G(Z): return a * Z + b
-    ''' 
-    !!!! What is G(z) ?????
-    '''
+    gJSD = ((1 - alpha) ** 2 * tt.mean(tt.exp(log_p(X)) * (log_p(X) - log_q(G(Z))))
+            + alpha ** 2 * tt.mean(tt.exp(log_q(G(Z))) * (log_q(G(Z)) - log_p(X))))
 
-    # geometric Jensen-Shannon divergence
-    # JSD = tt.mean(log_p(X) - log_q(X)) \
-    #     + tt.mean(tt.exp(log_q(G(Z))) * (log_q(G(Z)) - log_p(G(Z))))Ÿ
-    # gJSD = (1 - 0.5) ** 2 * tt.mean(tt.exp(log_p(X)) * (log_p(X) - log_q(G(Z)))) + 0.5 ** 2 * tt.mean(tt.exp(log_q(G(Z))) * (log_q(G(Z)) - log_p(X)))
-    gJSD = (1 - alpha) ** 2 * tt.mean(tt.exp(log_p(X)) * (log_p(X) - log_q(G(Z)))) + alpha ** 2 * tt.mean(tt.exp(log_q(G(Z))) * (log_q(G(Z)) - log_p(X)))
-
-
-    # function computing G-JSD and its gradient
-    f_gjsd = th.function([Z, X], [gJSD, th.grad(gJSD, a), th.grad(gJSD, b), th.grad(gJSD, alpha)])
-    # f_gjsd = th.function([Z, X], [gJSD, th.grad(gJSD, a), th.grad(gJSD, b)])
+    # Function computing G-JSD and its gradient
+    f_gjsd = th.function(
+        [Z, X],
+        [gJSD, th.grad(gJSD, a), th.grad(gJSD, b), th.grad(gJSD, alpha)])
 
     # SGD hyperparameters
     B = 200
     mm = 0.8
-    lr = .5
-
+    lr = .005
     da = 0.
     db = 0.
     dalpha = 0.
-    
-    try:
-        # display initial JSD
-        print('{0:>4} {1:.4f}'.format(0, float(f_gjsd(nr.randn(*data.shape), data)[0])))
-        print("Starting training! \n\n")
-        for epoch in range(max_epochs):
-            values = []
-            print(f"Alpha: {alpha.get_value()}")
-            # stochastic gradient descent
-            for t in range(0, data.shape[1], B):
-                
-                Z = nr.randn(D, B)
-                Y = data[:, t:t + B]
-                # pdb.set_trace()
-                # v, ga, gb = f_gjsd(Z, Y)
-                v, ga, gb, galpha = f_gjsd(Z, Y)
-                da = mm * da - lr * ga
-                db = mm * db - lr * gb
-                dalpha = mm * dalpha - lr * galpha
 
-                values.append(v)
+    print('{0:>4} {1:.4f}'.format(
+        0, float(f_gjsd(nr.randn(*data.shape), data)[0])))
+    print("Starting training! \n\n")
+    for epoch in range(max_epochs):
+        values = []
+        print(f"Alpha: {alpha.get_value()}")
+        for t in range(0, data.shape[1], B):
 
-                a.set_value(a.get_value() + da)
-                b.set_value(b.get_value() + db)
-                alpha.set_value(alpha.get_value() + dalpha)
-                if alpha.get_value() > 1.0:
-                    alpha.set_value(1.0)
-                elif alpha.get_value() < 0.0:
-                    alpha.set_value(0.0)
-            # reduce learning rate
-            lr /= 2.
+            Z = nr.randn(D, B)
+            Y = data[:, t:t + B]
+            v, ga, gb, galpha = f_gjsd(Z, Y)
+            da = mm * da - lr * ga
+            db = mm * db - lr * gb
+            dalpha = mm * dalpha - lr * galpha
 
-            # display estimated JSD
-            print('{0:>4} {1:.4f}'.format(epoch + 1, np.mean(values)))
+            values.append(v)
 
-    except KeyboardInterrupt:
-        pass
-    return a.get_value() * np.eye(D), b.get_value()
+            a.set_value(a.get_value() + da)
+            b.set_value(b.get_value() + db)
+            alpha.set_value(alpha.get_value() + dalpha)
+            if alpha.get_value() > 1.0:
+                alpha.set_value(1.0)
+            elif alpha.get_value() < 0.0:
+                alpha.set_value(0.0)
+
+        lr /= 2.0
+        print('{0:>4} {1:.4f}'.format(epoch + 1, np.mean(values)))
+
+    return a.get_value() * np.eye(D), b.get_value(), alpha.get_value()
+
 
 def fit_gjs(data, log_p, max_epochs=20):
     """
@@ -677,6 +581,7 @@ def fit_dgjs(data, log_p, max_epochs=20):
         pass
     return a.get_value() * np.eye(D), b.get_value()
 
+
 def fit_kl(data, log_p, max_epochs=20):
     """
     Fit isotropic Gaussian by minimizing reverse Kullback-Leibler divergence.
@@ -822,18 +727,30 @@ def fit_rkl(data, log_p, max_epochs=20):
 
 
 def main(argv):
-    parser = ArgumentParser(argv[0],
-                            description=__doc__,
-                            formatter_class=ArgumentDefaultsHelpFormatter)
-    parser.add_argument('--metrics', '-m', choices=['MMD', 'KL', 'RKL', 'JS', 'GJS', 'dGJS', '', 'tGJS'], nargs='+', default=['KL', 'RKL', 'JS', 'GJS'],
-                        help='Which metrics to include in comparison.')
-    parser.add_argument('--num_data', '-N', type=int, default=100000,
-                        help='Number of training points.')
-    parser.add_argument('--seed', '-s', type=int, default=22,
-                        help='Random seed used to generate data.')
-    parser.add_argument('--output', '-o', type=str, default='results/',
-                        help='Where to store results.')
-
+    parser = ArgumentParser(
+        argv[0],
+        description=__doc__,
+        formatter_class=ArgumentDefaultsHelpFormatter)
+    parser.add_argument(
+        '--metrics', '-m',
+        choices=['MMD', 'KL', 'RKL', 'JS', 'GJS', 'dGJS', '', 'tGJS'],
+        nargs='+', default=['KL', 'RKL', 'JS', 'GJS'],
+        help='Which metrics to include in comparison.')
+    parser.add_argument(
+        '--num_data', '-N', type=int, default=100000,
+        help='Number of training points.')
+    parser.add_argument(
+        '-d', type=int, default=2,
+        help='Dimension of optimisation problem.')
+    parser.add_argument(
+        '-k', type=int, default=10,
+        help='Number of mixture components.')
+    parser.add_argument(
+        '--seed', '-s', type=int, default=22,
+        help='Random seed used to generate data.')
+    parser.add_argument(
+        '--output', '-o', type=str, default='results/',
+        help='Where to store results.')
     args = parser.parse_args(argv[1:])
 
     if not os.path.exists(args.output):
@@ -841,79 +758,46 @@ def main(argv):
 
     print('Generating data...')
 
-    D = 3
-    nonlog_p, log_p, data = mogaussian(D=3, N=args.num_data, seed=args.seed)
-
-    if D == 2:
-        plot(log_p, data)
-        plt.savefig(os.path.join(args.output, '{0}_data.png'.format(args.seed)))
-
-    # if 'KL' in args.metrics:
-    #     print('Optimizing Kullback-Leibler divergence...')
-
-    #     b = np.mean(data, 1)[:, None]
-    #     A = np.eye(2) * np.std(data - b, 1)[:, None]
-
-    #     plot([A, b], data)
-    #     plt.savefig(os.path.join(args.output, '{0}_KL.png'.format(args.seed)))
+    p, log_p, data = mogaussian(
+        D=args.d, K=args.k, N=args.num_data, seed=args.seed)
+    print(f'Optimizing {args.metrics} divergence(s)...')
 
     if 'KL' in args.metrics:
-        print('Optimizing Kullback-Leibler divergence...')
-
         A, b = fit_kl(data, log_p)
 
-        plot([A, b], data)
-        plt.savefig(os.path.join(args.output, '{0}_KL.png'.format(args.seed)))
-
     if 'RKL' in args.metrics:
-        print('Optimizing *reverse* Kullback-Leibler divergence...')
-
         A, b = fit_rkl(data, log_p)
 
-        plot([A, b], data)
-        plt.savefig(os.path.join(args.output, '{0}_RKL.png'.format(args.seed)))
-
     if 'JS' in args.metrics:
-        print('Optimizing Jensen-Shannon divergence...')
-        pdb.set_trace()
         A, b = fit_js(data, log_p)
-        
-        plot([A, b], data)
-        plt.savefig(os.path.join(args.output, '{0}_JS.png'.format(args.seed)))
 
     if 'GJS' in args.metrics:
-        print('Optimizing *geometric* Jensen-Shannon divergence...')
-
         A, b = fit_gjs(data, log_p)
-        plot([A, b], data)
-        plt.savefig(os.path.join(args.output, '{0}_GJS.png'.format(args.seed)))
-    
+
     if 'tGJS' in args.metrics:
-        print('Optimizing trainable alpha *geometric* Jensen-Shannon divergence...')
-
-        A, b = fit_gjs_train_a(data, log_p)
-        if D == 2:
-            plot([A, b], data)
-            plt.savefig(os.path.join(args.output, '{0}_GJS-train-a.png'.format(args.seed)))
-
+        A, b, alpha = fit_gjs_train_a(data, log_p)
+        np.savetxt(
+            os.path.join(
+                args.output,
+                f'tGJS_d={args.d}_k={args.k}_{args.seed}.png'),
+            alpha)
 
     if 'dGJS' in args.metrics:
-        print('Optimizing dual *geometric* Jensen-Shannon divergence...')
-
         A, b = fit_dgjs(data, log_p)
-        plot([A, b], data)
-        plt.savefig(os.path.join(args.output, '{0}_dGJS.png'.format(args.seed)))
 
     if 'MMD' in args.metrics:
-        print('Optimizing MMD...')
-
         A, b = fit_mmd(data)
 
-        plot([A, b], data)
-        plt.savefig(os.path.join(args.output, '{0}_MMD.png'.format(args.seed)))
-
-    return 0
+    if args.d == 2:
+        plot(log_p, data)
+        plt.savefig(os.path.join(args.output, f'{args.seed}_data.png'))
+        for metric in args.metrics:
+            plot([A, b], data)
+            plt.savefig(
+                os.path.join(
+                    args.output,
+                    f'{metric}_d={args.d}_k={args.k}_{args.seed}.png'))
 
 
 if __name__ == '__main__':
-    sys.exit(main(sys.argv))
+    main(sys.argv)
