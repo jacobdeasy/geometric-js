@@ -18,7 +18,7 @@ from utils.helpers import (create_safe_directory, get_device, set_seed,
 from utils.visualize import GifTraversalsTraining
 
 
-RES_DIR = 'results'
+RES_DIR = 'results_new'
 
 
 def parse_arguments(args_to_parse: List):
@@ -67,9 +67,6 @@ def parse_arguments(args_to_parse: List):
     training.add_argument('--noise',
                           type=float, default=None,
                           help='Added noise to input images.')
-    training.add_argument('--denoise',
-                          type=bool, default=False,
-                          help='Whether to use clean images as targets.')
 
     # Model Options
     model = parser.add_argument_group('Model specfic options')
@@ -183,6 +180,7 @@ def main(args: argparse.Namespace):
 
         # PREPARES DATA
         train_loader = get_dataloaders(args.dataset,
+                                       noise=args.noise,
                                        batch_size=args.batch_size,
                                        logger=logger)
         logger.info(
@@ -215,7 +213,7 @@ def main(args: argparse.Namespace):
                           is_progress_bar=not args.no_progress_bar,
                           gif_visualizer=gif_visualizer,
                           loss_optimizer=loss_optimizer,
-                          denoise=args.denoise)
+                          denoise=args.noise is not None)
         trainer(train_loader,
                 epochs=args.epochs,
                 checkpoint_every=args.checkpoint_every,)
@@ -223,44 +221,46 @@ def main(args: argparse.Namespace):
         # SAVE MODEL AND EXPERIMENT INFORMATION
         save_model(trainer.model, exp_dir, metadata=vars(args))
 
-    if args.is_eval_only:
-        model = load_model(exp_dir, is_gpu=not args.no_cuda)
-        metadata = load_metadata(exp_dir)
+    # Eval
+    model = load_model(exp_dir, is_gpu=not args.no_cuda)
+    metadata = load_metadata(exp_dir)
 
-        test_loader = get_dataloaders(metadata["dataset"],
-                                      train=False,
-                                      batch_size=128,
-                                      logger=logger)
-        loss_f = get_loss_f(args.loss,
-                            n_data=len(test_loader.dataset),
-                            device=device,
-                            **vars(args))
-        evaluator = Evaluator(model, loss_f,
-                              device=device,
-                              is_metrics=args.is_metrics,
-                              is_train=False,
-                              logger=logger,
-                              save_dir=exp_dir,
-                              is_progress_bar=not args.no_progress_bar)
-        evaluator(test_loader)
+    test_loader = get_dataloaders(metadata["dataset"],
+                                  noise=args.noise,
+                                  train=False,
+                                  batch_size=128,
+                                  logger=logger)
+    loss_f = get_loss_f(args.loss,
+                        n_data=len(test_loader.dataset),
+                        device=device,
+                        **vars(args))
+    evaluator = Evaluator(model, loss_f,
+                          device=device,
+                          is_metrics=args.is_metrics,
+                          is_train=False,
+                          logger=logger,
+                          save_dir=exp_dir,
+                          is_progress_bar=not args.no_progress_bar,
+                          denoise=args.noise is not None)
+    evaluator(test_loader)
 
-        # Train set also
-        test_loader = get_dataloaders(metadata["dataset"],
-                                      train=True,
-                                      batch_size=128,
-                                      logger=logger)
-        loss_f = get_loss_f(args.loss,
-                            n_data=len(test_loader.dataset),
-                            device=device,
-                            **vars(args))
-        evaluator = Evaluator(model, loss_f,
-                              device=device,
-                              is_metrics=args.is_metrics,
-                              is_train=True,
-                              logger=logger,
-                              save_dir=exp_dir,
-                              is_progress_bar=not args.no_progress_bar)
-        evaluator(test_loader)
+    # Train set also
+    test_loader = get_dataloaders(metadata["dataset"],
+                                  train=True,
+                                  batch_size=128,
+                                  logger=logger)
+    loss_f = get_loss_f(args.loss,
+                        n_data=len(test_loader.dataset),
+                        device=device,
+                        **vars(args))
+    evaluator = Evaluator(model, loss_f,
+                          device=device,
+                          is_metrics=args.is_metrics,
+                          is_train=True,
+                          logger=logger,
+                          save_dir=exp_dir,
+                          is_progress_bar=not args.no_progress_bar)
+    evaluator(test_loader)
 
 
 if __name__ == '__main__':

@@ -18,6 +18,7 @@ import zipfile
 
 from PIL import Image
 from skimage.io import imread
+from torch.tensor import Tensor
 from torch.utils.data import DataLoader, Dataset
 from torchvision import datasets, transforms
 from tqdm import tqdm
@@ -76,12 +77,12 @@ def get_dataloaders(dataset: str,
 
     # Initialise the dataset class:
     if root is None:
-        if noise == 0.0 or noise == None:
+        if noise == 0.0 or noise is None:
             dataset = Dataset(train=train, logger=logger)
         else:
             dataset = Dataset(train=train, noise=noise, logger=logger)
     else:
-        if noise == 0.0 or noise == None:
+        if noise == 0.0 or noise is None:
             dataset = Dataset(train=train, root=root, logger=logger)
         else:
             dataset = Dataset(train=train, noise=noise, root=root,
@@ -304,6 +305,7 @@ class Chairs(datasets.ImageFolder):
     background_color = COLOUR_WHITE
 
     def __init__(self,
+                 train: Optional[bool] = True,
                  root: Optional[str] = os.path.join(DIR, '../data/chairs'),
                  logger: Optional[Any] = logging.getLogger(__name__)):
         self.root = root
@@ -485,23 +487,21 @@ class BinarizedMNIST(Dataset):
 
 
 # HELPERS
-def preprocess(root, size=(64, 64), img_format='JPEG', center_crop=None):
+def preprocess(root: str,
+               size: Optional[Tuple[int, int]] = (64, 64),
+               img_format: Optional[str] = 'JPEG',
+               center_crop: Optional[Tuple[int, int]] = None
+               ) -> None:
     """Preprocess a folder of images.
 
     Parameters
     ----------
-    root : string
-        Root directory of all images.
-
-    size : tuple of int
-        Size (width, height) to rescale the images. If `None` don't rescale.
-
     img_format : string
         Format to save the image in. Possible formats:
         https://pillow.readthedocs.io/en/3.1.x/handbook/image-file-formats.html.
 
     center_crop : tuple of int
-        Size (width, height) to center-crop the images. If `None` don't center-crop.
+        Size (width, height) to center-crop the images.
     """
     imgs = []
     for ext in [".png", ".jpg", ".jpeg"]:
@@ -527,13 +527,15 @@ def preprocess(root, size=(64, 64), img_format='JPEG', center_crop=None):
 
 
 class AddGaussianNoise(object):
-    def __init__(self, mean=0.0, std=1.0):
+    def __init__(self,
+                 mean: Optional[float] = 0.0,
+                 std: Optional[float] = 1.0
+                 ) -> None:
         self.std = std
         self.mean = mean
 
-    def __call__(self, tensor):
+    def __call__(self, tensor: Tensor) -> Tensor:
         # return tensor + torch.randn(tensor.size()) * self.std + self.mean
-        #
         # Clamp output so image with noise is still greyscale:
         return torch.clamp(tensor + torch.randn(tensor.size()) * self.std + self.mean, 0, 1)
 

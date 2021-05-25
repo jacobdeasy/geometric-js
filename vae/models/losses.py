@@ -5,16 +5,16 @@ import torch
 
 from torch import optim, Tensor
 from torch.nn import functional as F
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple
 
 from .discriminator import Discriminator
 from vae.utils.math import (log_density_gaussian, log_importance_weight_matrix,
                             matrix_log_density_gaussian)
 
 
-LOSSES = ["VAE", "KL", "fwdKL", "KLtrainbeta", "GJS", "dGJS",
-          "tGJS", "tdGJS",  "GJStrainprior", "dGJStrainprior",
-          "MMD", "betaH", "betaB", "factor", "btcvae"]
+LOSSES = ["VAE", "KL", "fwdKL", "GJS", "dGJS",
+          "tGJS", "tdGJS", "MMD", "betaH", "betaB",
+          "factor", "btcvae"]
 RECON_DIST = ["bernoulli", "laplace", "gaussian"]
 
 
@@ -28,9 +28,6 @@ def get_loss_f(loss_name, **kwargs_parse):
         return BetaHLoss(beta=1, **kwargs_all)
     elif loss_name == "fwdKL":
         return BetaHLoss(beta=1, fwd_kl=True, **kwargs_all)
-    elif loss_name == 'KLtrainbeta':
-        return BVAETrainBeta(beta=kwargs_parse["GJS_B"],
-                            **kwargs_all)
     elif loss_name == "GJS":
         return GeometricJSLoss(alpha=kwargs_parse["GJS_A"],
                                beta=kwargs_parse["GJS_B"],
@@ -53,13 +50,6 @@ def get_loss_f(loss_name, **kwargs_parse):
         return GeometricJSLossTrainableAlpha(alpha=kwargs_parse["GJS_A"],
                                              beta=kwargs_parse["GJS_B"],
                                              dual=True,
-                                             invert_alpha=kwargs_parse["GJS_invA"],
-                                             **kwargs_all)
-    elif loss_name == "dGJStrainprior":
-        return GeometricJSLossTrainablePrior(alpha=kwargs_parse["GJS_A"],
-                                             beta=kwargs_parse["GJS_B"],
-                                             dual=True,
-                                             device='cuda',
                                              invert_alpha=kwargs_parse["GJS_invA"],
                                              **kwargs_all)
     elif loss_name == "MMD":
@@ -566,12 +556,13 @@ class GeometricJSLossTrainableAlpha(BaseLoss, torch.nn.Module):
     References
     ----------
         [1] Deasy, Jacob, Nikola Simidjievski, and Pietro Liò.
-        "Constraining Variational Inference with Geometric Jensen-Shannon Divergence."
-        Advances in Neural Information Processing Systems 33 (2020).
+        "Constraining Variational Inference with Geometric Jensen-Shannon
+        Divergence." Advances in Neural Information Processing Systems 33
+        (2020).
     """
 
     def __init__(self,
-                 alpha: Optional[float] = None,
+                 alpha: Optional[float] = 0.5,
                  beta: Optional[float] = 1.0,
                  dual: Optional[bool] = True,
                  invert_alpha: Optional[bool] = True,
@@ -580,17 +571,11 @@ class GeometricJSLossTrainableAlpha(BaseLoss, torch.nn.Module):
                  ) -> None:
         super(GeometricJSLossTrainableAlpha, self).__init__(**kwargs)
 
-        if alpha is not None:
-            self.alpha = torch.nn.Parameter(torch.tensor(alpha).to(device))
-        else:
-            self.alpha = torch.nn.Parameter(torch.rand(1).to(device))
+        self.alpha = torch.nn.Parameter(torch.tensor(alpha))
         self.beta = beta
         self.dual = dual
         self.invert_alpha = invert_alpha
         self.device = device
-
-        self.mean_prior = None
-        self.logvar_prior = None
 
     def __call__(self,
                  data,
@@ -766,7 +751,8 @@ def _kl_normal_loss(m_1: torch.Tensor,
     """Calculates the KL divergence between two normal distributions
     with diagonal covariance matrices."""
     latent_dim = m_1.size(1)
-    latent_kl = 0.5 * (-1 + (lv_2 - lv_1) + lv_1.exp() / lv_2.exp() + (m_2 - m_1).pow(2) / lv_2.exp()).mean(dim=0)
+    latent_kl = (0.5 * (-1 + (lv_2 - lv_1) + lv_1.exp() / lv_2.exp()
+                 + (m_2 - m_1).pow(2) / lv_2.exp()).mean(dim=0))
     total_kl = latent_kl.sum()
 
     if storer is not None:
@@ -812,6 +798,9 @@ def _gjs_normal_loss(mean, logvar, dual=False, a=0.5, invert_alpha=True,
             mean, var, mean_a, var_a, term=1, storer=storer)
         kl_2 = _kl_normal_loss(
             mean_0, var_0, mean_a, var_a, term=2, storer=storer)
+    with torch.no_grad():
+        _ = _kl_normal_loss(
+            mean, var, mean_0, var_0, term='rkl', storer=storer)
 
     total_gjs = (1 - a) * kl_1 + a * kl_2
 
@@ -832,51 +821,10 @@ def _gjs_normal_loss(mean, logvar, dual=False, a=0.5, invert_alpha=True,
                 storer_label += '_invert'
             with torch.no_grad():
                 for i in range(101):
-                    gjs = calculate_gjs(
+                    gjs = _gjs_normal_loss(
                         mean, logvar,
-                        dual=False, a=i/100, invert_alpha=True)
+                        dual=False, a=i/100, invert_alpha=True, storer=None)
                     storer[f"storer_label_alpha_test={i/100}"] += [gjs.item()]
-
-    return total_gjs
-
-
-def _gjs_normal_loss_train_prior(
-        mean, logvar, mean_prior, logvar_prior,
-        dual=False, a=0.5, invert_alpha=True, storer=None):
-    var = logvar.exp()
-    var_prior = logvar_prior.exp()
-
-    if invert_alpha:
-        mean_a, var_a = _get_mu_var(
-            mean, var, mean_prior, var_prior, a=1 - a, storer=storer)
-    else:
-        mean_a, var_a = _get_mu_var(
-            mean, var, mean_prior, var_prior, a=a, storer=storer)
-
-    var_a = torch.log(var_a)
-    var = torch.log(var)
-    var_prior = torch.log(var_prior)
-
-    if dual:
-        kl_1 = _kl_normal_loss(
-            mean_a, var_a, mean, var, term=1, storer=storer)
-        kl_2 = _kl_normal_loss(
-            mean_a, var_a, mean_prior, var_prior, term=2, storer=storer)
-    else:
-        kl_1 = _kl_normal_loss(
-            mean, var, mean_a, var_a, term=1, storer=storer)
-        kl_2 = _kl_normal_loss(
-            mean_prior, var_prior, mean_a, var_a, term=2, storer=storer)
-
-    total_gjs = (1 - a) * kl_1 + a * kl_2
-
-    if storer is not None:
-        storer_label = 'gjs_loss'
-        if dual:
-            storer_label += '_dual'
-        if invert_alpha:
-            storer_label += '_invert'
-        storer[storer_label] += [total_gjs.item()]
 
     return total_gjs
 

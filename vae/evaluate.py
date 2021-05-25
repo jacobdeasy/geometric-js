@@ -6,9 +6,11 @@ import os
 import torch
 
 from collections import defaultdict
+from logging import Logger
 from functools import reduce
 from timeit import default_timer
-from tqdm import trange, tqdm
+from tqdm import tqdm, trange
+from typing import Any, Dict, Optional, Tuple
 
 from vae.utils.math import log_density_gaussian
 from vae.utils.modelIO import save_metadata
@@ -20,57 +22,33 @@ METRICS_FILENAME = "metrics.log"
 METRIC_HELPERS_FILE = "metric_helpers.pth"
 
 
-class Evaluator:
-    """Class to handle evaluation of model.
+class Evaluator():
 
-    Parameters
-    ----------
-    model: vae.vae.VAE
-
-    loss_f: vae.models.BaseLoss
-        Loss function.
-
-    device: torch.device, optional
-        Device on which to run the code.
-
-    logger: logging.Logger, optional
-        Logger.
-
-    save_dir : str, optional
-        Directory for saving logs.
-
-    is_progress_bar: bool, optional
-        Whether to use a progress bar for training.
-    """
-
-    def __init__(self, model, loss_f,
-                 device=torch.device("cpu"),
-                 is_metrics=False,
-                 is_train=False,
-                 logger=logging.getLogger(__name__),
-                 save_dir="results",
-                 is_progress_bar=True,
-                 denoise=False):
-
+    def __init__(self,
+                 model: Any,
+                 loss_f: Any,
+                 device: Optional[torch.device] = torch.device("cpu"),
+                 is_metrics: Optional[bool] = False,
+                 is_train: Optional[bool] = False,
+                 logger: Optional[Logger] = logging.getLogger(__name__),
+                 save_dir: Optional[str] = "results",
+                 is_progress_bar: Optional[bool] = True,
+                 denoise: Optional[bool] = False
+                 ) -> None:
         self.model = model.to(device)
         self.loss_f = loss_f
         self.device = device
         self.is_metrics = is_metrics
         self.is_train = is_train
         self.logger = logger
+        self.logger.info(f"Testing Device: {self.device}")
         self.save_dir = save_dir
         self.is_progress_bar = is_progress_bar
-        self.logger.info(f"Testing Device: {self.device}")
         self.denoise = denoise
 
-    def __call__(self, data_loader):
-        """
-        Compute all test losses.
-
-        Parameters
-        ----------
-        data_loader: torch.utils.data.DataLoader
-        """
+    def __call__(self,
+                 data_loader: torch.utils.data.DataLoader
+                 ) -> Tuple[Dict, Dict]:
         start = default_timer()
         is_still_training = self.model.training
         self.model.eval()
@@ -99,53 +77,39 @@ class Evaluator:
 
         return metrics, losses
 
-    def compute_losses(self, dataloader):
-        """
-        Compute all test losses.
-
-        Parameters
-        ----------
-        data_loader: torch.utils.data.DataLoader
-        """
+    def compute_losses(self, data_loader: torch.utils.data.DataLoader):
         storer = defaultdict(list)
         total_rec_loss = 0.
         if self.denoise:
-            for noise_data, clean_data in tqdm(dataloader,
-                                leave=False,
-                                disable=not self.is_progress_bar):
+            for noise_data, clean_data in tqdm(
+                    data_loader, leave=False,
+                    disable=not self.is_progress_bar):
                 noise_data = noise_data.to(self.device)
                 clean_data = clean_data.to(self.device)
-                try:
-                    recon_batch, latent_dist, latent_sample = self.model(noise_data)
-                    loss, rec_loss = self.loss_f(
-                        clean_data, recon_batch, latent_dist, self.model.training,
-                        storer, latent_sample=latent_sample)
-                    total_rec_loss += rec_loss.item()
-                except ValueError:
-                    # for losses that use multiple optimizers (e.g. Factor)
-                    _ = self.loss_f.call_optimize(data, self.model, None, storer)
-        else:
-            for data, _ in tqdm(dataloader,
-                            leave=False,
-                            disable=not self.is_progress_bar):
-                data = data.to(self.device)
-                try:
-                    recon_batch, latent_dist, latent_sample = self.model(data)
-                    loss, rec_loss = self.loss_f(
-                        data, recon_batch, latent_dist, self.model.training,
-                        storer, latent_sample=latent_sample)
-                    total_rec_loss += rec_loss.item()
-                except ValueError:
-                    # for losses that use multiple optimizers (e.g. Factor)
-                    _ = self.loss_f.call_optimize(data, self.model, None, storer)
-    
 
-        losses = {k: sum(v) / len(dataloader) for k, v in storer.items()}
-        losses['recon_loss'] = total_rec_loss / len(dataloader)
+                recon_batch, latent_dist, latent_sample = self.model(noise_data)
+                loss, rec_loss = self.loss_f(
+                    clean_data, recon_batch, latent_dist, self.model.training,
+                    storer, latent_sample=latent_sample)
+                total_rec_loss += rec_loss.item()
+        else:
+            for data, _ in tqdm(data_loader,
+                                leave=False,
+                                disable=not self.is_progress_bar):
+                data = data.to(self.device)
+
+                recon_batch, latent_dist, latent_sample = self.model(data)
+                loss, rec_loss = self.loss_f(
+                    data, recon_batch, latent_dist, self.model.training,
+                    storer, latent_sample=latent_sample)
+                total_rec_loss += rec_loss.item()
+
+        losses = {k: sum(v) / len(data_loader) for k, v in storer.items()}
+        losses['recon_loss'] = total_rec_loss / len(data_loader)
 
         return losses
 
-    def compute_metrics(self, dataloader):
+    def compute_metrics(self, data_loader):
         """
         Compute all the metrics.
 
@@ -154,16 +118,16 @@ class Evaluator:
         data_loader: torch.utils.data.DataLoader
         """
         try:
-            lat_sizes = dataloader.dataset.lat_sizes
-            lat_names = dataloader.dataset.lat_names
+            lat_sizes = data_loader.dataset.lat_sizes
+            lat_names = data_loader.dataset.lat_names
         except AttributeError:
             raise ValueError(
                 "Dataset needs to have known true factors of variations to" +
                 "compute the metric. This does not seem to be the case for" +
-                f" {type(dataloader.__dict__['dataset']).__name__}")
+                f" {type(data_loader.__dict__['dataset']).__name__}")
 
         self.logger.info("Computing the empirical distribution q(z|x)...")
-        samples_zCx, params_zCx = self._compute_q_zCx(dataloader)
+        samples_zCx, params_zCx = self._compute_q_zCx(data_loader)
         len_dataset, latent_dim = samples_zCx.shape
 
         self.logger.info("Estimating marginal entropies...")

@@ -263,6 +263,96 @@ def fit_mmd(data):
     return A.get_value() * np.eye(data.shape[0]), b.get_value().T
 
 
+def js(X, Z, G, log_p, log_q, a=0.0):
+    return (tt.mean(tt.log(tt.nnet.sigmoid(log_p(X) - log_q(G(Z)))))
+            + tt.mean(tt.log(tt.nnet.sigmoid(log_q(G(Z)) - log_p(X))))
+            + tt.mean(0.0 * a * G(Z)))  # Use dummy vars
+
+
+def kl(X, Z, G, log_p, log_q, a=0.0):
+    return (tt.mean(tt.exp(log_q(G(Z))) * (log_q(G(Z)) - log_p(G(Z))))
+            + tt.mean(0.0 * a * G(Z)))  # Use dummy vars
+
+
+def rkl(X, Z, G, log_p, log_q, a=0.0):
+    return (tt.mean(tt.exp(log_p(X)) * (log_p(X) - log_q(X)))
+            + tt.mean(0.0 * a * G(Z)))  # Use dummy vars
+
+
+def gjs(X, Z, G, log_p, log_q, a=0.5):
+    return ((1 - a) ** 2 * tt.mean(tt.exp(log_p(X)) * (log_p(X) - log_q(G(Z))))
+            + a ** 2 * tt.mean(tt.exp(log_q(G(Z))) * (log_q(G(Z)) - log_p(X))))
+
+
+def dgjs(X, Z, G, log_p, log_q, a=0.5):
+    return ((1 - a) ** 2 * tt.mean((tt.exp(log_p(X)) ** a)
+                                   * (tt.exp(log_q(G(Z))) ** (1 - a))
+                                   * (log_q(G(Z)) - log_p(X)))
+            + a ** 2 * tt.mean((tt.exp(log_p(X))) ** a
+                               * (tt.exp(log_q(G(Z))) ** (1 - a))
+                               * (log_p(X) - log_q(G(Z)))))
+
+
+def fit(data, log_p, div='kl', max_epochs=20, alpha=0.5):
+    D = data.shape[0]
+    X = tt.dmatrix('X')
+    Z = tt.dmatrix('Z')
+
+    nr.seed(int(time() * 1000.) % 4294967295)
+    idx = nr.permutation(data.shape[1])[:100]
+
+    # Initialize parameters
+    b = th.shared(np.mean(data[:, idx], 1)[:, None],
+                  broadcastable=(False, True))
+    a = th.shared(np.std(data[:, idx] - b.get_value(), 1)[:, None],
+                  broadcastable=[False, True])
+    if div in ['tgjs', 'tdgjs']:
+        alpha = th.shared(alpha)
+
+    def log_q(X):
+        return (-0.5 * tt.sum(tt.square((X - b) / a), 0)
+                - D * tt.log(tt.abs_(a)) - D / 2. * np.log(np.pi))
+
+    def G(Z):
+        return a * Z + b
+
+    if div in ['tgjs', 'tdgjs']:
+        div = eval(div)(X, Z, G, log_p, log_q, a=alpha)
+        f_div = th.function(
+            [Z, X],
+            [div, th.grad(div, a), th.grad(div, b), th.grad(div, alpha)])
+    else:
+        div = eval(div)(X, Z, G, log_p, log_q, a=alpha)
+        f_div = th.function(
+            [Z, X],
+            [div, th.grad(div, a), th.grad(div, b)])
+
+    # SGD hyperparameters
+    B = 200
+    mm = 0.8
+    lr = 0.5
+    da = 0.0
+    db = 0.0
+
+    print('{0:>4} {1:.4f}'.format(0, f_div(nr.randn(*data.shape), data)[0]))
+    for epoch in range(max_epochs):
+        values = []
+        for t in range(0, data.shape[1], B):  # SGD with momentum
+            Z = nr.randn(D, B)
+            Y = data[:, t:t + B]
+            v, ga, gb = f_div(Z, Y)
+            da = mm * da - lr * ga
+            db = mm * db - lr * gb
+
+            a.set_value(a.get_value() + da)
+            b.set_value(b.get_value() + db)
+            values.append(v)
+        # lr /= 2.
+        print(f'{epoch+1:>4} {np.mean(values):.4f}')
+
+    return a.get_value() * np.eye(D), b.get_value()
+
+
 def fit_js(data, log_p, max_epochs=20):
     """
     Fit isotropic Gaussian by minimizing Jensen-Shannon divergence.
@@ -288,8 +378,9 @@ def fit_js(data, log_p, max_epochs=20):
     def G(Z): return a * Z + b
 
     # Jensen-Shannon divergence
-    JSD = tt.mean(tt.log(tt.nnet.sigmoid(log_p(X) - log_q(G(Z))))) + tt.mean(tt.log(tt.nnet.sigmoid(log_q(G(Z)) - log_p(X))))
-    
+    JSD = (tt.mean(tt.log(tt.nnet.sigmoid(log_p(X) - log_q(G(Z)))))
+           + tt.mean(tt.log(tt.nnet.sigmoid(log_q(G(Z)) - log_p(X)))))
+
     JSD = (JSD + np.log(4.)) / 2.
     # JSD1 = tt.mean(tt.log(tt.nnet.sigmoid(log_p(X) - log_q(X))))
     # JSD2 = tt.mean(tt.log(tt.nnet.sigmoid(log_q(G(Z)) - log_p(G(Z)))))
@@ -339,7 +430,7 @@ def fit_js(data, log_p, max_epochs=20):
     return a.get_value() * np.eye(D), b.get_value()
 
 
-def fit_gjs_train_a(data, log_p, max_epochs=20):
+def fit_gjs_train_a(data, log_p, max_epochs=50):
     """Fit isotropic Gaussian by minimizing GJS divergence."""
     D = data.shape[0]
 
@@ -369,7 +460,7 @@ def fit_gjs_train_a(data, log_p, max_epochs=20):
     # SGD hyperparameters
     B = 200
     mm = 0.8
-    lr = .005
+    lr = .002
     da = 0.
     db = 0.
     dalpha = 0.
@@ -399,21 +490,15 @@ def fit_gjs_train_a(data, log_p, max_epochs=20):
             elif alpha.get_value() < 0.0:
                 alpha.set_value(0.0)
 
-        lr /= 2.0
+        # lr /= 2.0
         print('{0:>4} {1:.4f}'.format(epoch + 1, np.mean(values)))
 
     return a.get_value() * np.eye(D), b.get_value(), alpha.get_value()
 
 
 def fit_gjs(data, log_p, max_epochs=20):
-    """
-    Fit isotropic Gaussian by minimizing geometric Jensen-Shannon divergence.
-    """
-
-    # data dimensionality
+    """Fit isotropic Gaussian by minimizing geometric Jensen-Shannon divergence."""
     D = data.shape[0]
-
-    # data and hidden states
     X = tt.dmatrix('X')
     Z = tt.dmatrix('Z')
 
@@ -424,72 +509,43 @@ def fit_gjs(data, log_p, max_epochs=20):
     b = th.shared(np.mean(data[:, idx], 1)[:, None], broadcastable=(False, True))
     a = th.shared(np.std(data[:, idx] - b.get_value(), 1)[:, None], broadcastable=[False, True])
 
-    # alpha = th.shared(1.0)
-    alpha = 0.0
-    # model density
-    def q(X): return normal(X, b, a)
+    alpha = 0.4
     def log_q(X): return -0.5 * tt.sum(tt.square((X - b) / a), 0) - D * tt.log(tt.abs_(a)) - D / 2. * np.log(np.pi)
-
     def G(Z): return a * Z + b
-    ''' 
-    !!!! What is G(z) ?????
-    '''
 
     # geometric Jensen-Shannon divergence
     # JSD = tt.mean(log_p(X) - log_q(X)) \
     #     + tt.mean(tt.exp(log_q(G(Z))) * (log_q(G(Z)) - log_p(G(Z))))
-
-    gJSD = (1 - alpha) ** 2 * tt.mean(tt.exp(log_p(X)) * (log_p(X) - log_q(G(Z)))) + alpha ** 2 * tt.mean(tt.exp(log_q(G(Z))) * (log_q(G(Z)) - log_p(X)))
-    # gJSD = (1 - alpha) ** 2 * tt.mean(tt.exp(log_p(X)) * (log_p(X) - log_q(X))) + alpha ** 2 * tt.mean(tt.exp(log_q(G(Z))) * (log_q(G(Z)) - log_p(G(Z))))
-
-
-    # function computing G-JSD and its gradient
-    # f_gjsd = th.function([Z, X], [gJSD, th.grad(gJSD, a), th.grad(gJSD, b), th.grad(gJSD, alpha)])
+    gJSD = ((1 - alpha) ** 2 * tt.mean(tt.exp(log_p(X)) * (log_p(X) - log_q(G(Z))))
+            + alpha ** 2 * tt.mean(tt.exp(log_q(G(Z))) * (log_q(G(Z)) - log_p(X))))
     f_gjsd = th.function([Z, X], [gJSD, th.grad(gJSD, a), th.grad(gJSD, b)])
 
     # SGD hyperparameters
     B = 200
     mm = 0.8
     lr = .5
-
     da = 0.
     db = 0.
-    dalpha = 0.
-    
-    try:
-        # display initial JSD
-        print('{0:>4} {1:.4f}'.format(0, float(f_gjsd(nr.randn(*data.shape), data)[0])))
 
-        for epoch in range(max_epochs):
-            values = []
-            print(f"Alpha: {alpha}")
-            # stochastic gradient descent
-            for t in range(0, data.shape[1], B):
-                
-                Z = nr.randn(D, B)
-                Y = data[:, t:t + B]
-                # pdb.set_trace()
-                v, ga, gb = f_gjsd(Z, Y)
-                # v, ga, gb, galpha = f_gjsd(Z, Y)
-                da = mm * da - lr * ga
-                db = mm * db - lr * gb
-                # dalpha = mm * dalpha - lr * galpha
+    print('{0:>4} {1:.4f}'.format(0, float(f_gjsd(nr.randn(*data.shape), data)[0])))
+    for epoch in range(max_epochs):
+        values = []
+        print(f"Alpha: {alpha}")
+        # stochastic gradient descent
+        for t in range(0, data.shape[1], B):
+            Z = nr.randn(D, B)
+            Y = data[:, t:t + B]
+            v, ga, gb = f_gjsd(Z, Y)
+            da = mm * da - lr * ga
+            db = mm * db - lr * gb
 
-                values.append(v)
+            values.append(v)
 
-                a.set_value(a.get_value() + da)
-                b.set_value(b.get_value() + db)
-                # alpha.set_value(alpha.get_value() + dalpha)
-                
+            a.set_value(a.get_value() + da)
+            b.set_value(b.get_value() + db)
+        # lr /= 2.
+        print('{0:>4} {1:.4f}'.format(epoch + 1, np.mean(values)))
 
-            # reduce learning rate
-            lr /= 2.
-
-            # display estimated JSD
-            print('{0:>4} {1:.4f}'.format(epoch + 1, np.mean(values)))
-
-    except KeyboardInterrupt:
-        pass
     return a.get_value() * np.eye(D), b.get_value()
 
 
@@ -732,10 +788,10 @@ def main(argv):
         description=__doc__,
         formatter_class=ArgumentDefaultsHelpFormatter)
     parser.add_argument(
-        '--metrics', '-m',
-        choices=['MMD', 'KL', 'RKL', 'JS', 'GJS', 'dGJS', '', 'tGJS'],
-        nargs='+', default=['KL', 'RKL', 'JS', 'GJS'],
-        help='Which metrics to include in comparison.')
+        '--divergence', '-m',
+        choices=['mmd', 'kl', 'rkl', 'js', 'gjs', 'dgjs', '', 'tgjs'],
+        default='kl',
+        help='Which metric to use.')
     parser.add_argument(
         '--num_data', '-N', type=int, default=100000,
         help='Number of training points.')
@@ -745,6 +801,9 @@ def main(argv):
     parser.add_argument(
         '-k', type=int, default=10,
         help='Number of mixture components.')
+    parser.add_argument(
+        '-a', type=float, default=0.5,
+        help='Initial alpha for skew divergences')
     parser.add_argument(
         '--seed', '-s', type=int, default=22,
         help='Random seed used to generate data.')
@@ -760,33 +819,35 @@ def main(argv):
 
     p, log_p, data = mogaussian(
         D=args.d, K=args.k, N=args.num_data, seed=args.seed)
-    print(f'Optimizing {args.metrics} divergence(s)...')
+    print(f'Optimizing {args.divergence} divergence...')
 
-    if 'KL' in args.metrics:
-        A, b = fit_kl(data, log_p)
+    A, b = fit(data, log_p, div=args.divergence, alpha=args.a)
 
-    if 'RKL' in args.metrics:
-        A, b = fit_rkl(data, log_p)
+    # if 'KL' in args.metrics:
+    #     A, b = fit_kl(data, log_p)
 
-    if 'JS' in args.metrics:
-        A, b = fit_js(data, log_p)
+    # if 'RKL' in args.metrics:
+    #     A, b = fit_rkl(data, log_p)
 
-    if 'GJS' in args.metrics:
-        A, b = fit_gjs(data, log_p)
+    # if 'JS' in args.metrics:
+    #     A, b = fit_js(data, log_p)
 
-    if 'tGJS' in args.metrics:
-        A, b, alpha = fit_gjs_train_a(data, log_p)
-        np.savetxt(
-            os.path.join(
-                args.output,
-                f'tGJS_d={args.d}_k={args.k}_{args.seed}.png'),
-            alpha)
+    # if 'GJS' in args.metrics:
+    #     A, b = fit_gjs(data, log_p)
 
-    if 'dGJS' in args.metrics:
-        A, b = fit_dgjs(data, log_p)
+    # if 'tGJS' in args.metrics:
+    #     A, b, alpha = fit_gjs_train_a(data, log_p)
+    #     # np.savetxt(
+    #     #     os.path.join(
+    #     #         args.output,
+    #     #         f'tGJS_d={args.d}_k={args.k}_{args.seed}.png'),
+    #     #     np.array(alpha)[None, None])
 
-    if 'MMD' in args.metrics:
-        A, b = fit_mmd(data)
+    # if 'dGJS' in args.metrics:
+    #     A, b = fit_dgjs(data, log_p)
+
+    # if 'MMD' in args.metrics:
+    #     A, b = fit_mmd(data)
 
     if args.d == 2:
         plot(log_p, data)

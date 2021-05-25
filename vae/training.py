@@ -5,6 +5,7 @@ import os
 import torch
 
 from collections import defaultdict
+from logging import Logger
 from timeit import default_timer
 from tqdm import trange
 from typing import Any, Dict, Optional, Tuple
@@ -22,7 +23,7 @@ class Trainer():
                  optimizer: torch.optim.Optimizer,
                  loss_f: Any,
                  device: Optional[torch.device] = torch.device("cpu"),
-                 logger: Optional[logging.Logger] = logging.getLogger(__name__),
+                 logger: Optional[Logger] = logging.getLogger(__name__),
                  save_dir: Optional[str] = "results",
                  gif_visualizer: Optional[Any] = None,
                  is_progress_bar: Optional[bool] = True,
@@ -62,9 +63,7 @@ class Trainer():
             if self.loss_optimizer is not None:
                 self.losses_logger.log(epoch,
                                        storer,
-                                       alpha_parameter=self.loss_f.alpha,
-                                       mean=self.loss_f.mean_prior,
-                                       logvar=self.loss_f.logvar_prior)
+                                       alpha_parameter=self.loss_f.alpha)
             else:
                 self.losses_logger.log(epoch, storer)
 
@@ -99,7 +98,6 @@ class Trainer():
                 # If denoising experiment, calculate the reconstruction error
                 # by comparing the output of the vae decoder with clean
                 for _, (noisy_data, clean_data) in enumerate(data_loader):
-
                     iter_loss, iter_rec_loss = self._train_iteration(
                         data=noisy_data, storer=storer, clean_data=clean_data)
                     epoch_rec_loss += iter_rec_loss
@@ -136,14 +134,14 @@ class Trainer():
                 latent_sample=latent_sample)
             if self.loss_optimizer is not None:
                 self.loss_optimizer.zero_grad()
-                with torch.no_grad():
-                    if hasattr(self.loss_f, 'alpha'):
-                        self.loss_f.alpha.clamp_(0, 1)
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
             if self.loss_optimizer is not None:
                 self.loss_optimizer.step()
+                with torch.no_grad():
+                    if hasattr(self.loss_f, 'alpha'):
+                        self.loss_f.alpha.clamp_(0, 1)
 
         except ValueError:
             # For losses that use multiple optimizers (e.g. Factor)

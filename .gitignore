@@ -1,7 +1,8 @@
 .vscode/
-figs/
+figs*/
 *.ipynb_checkpoints*
-results/
+results*/
 *__pycache__*
 data/
 logs/
+notebooks/*.csv
