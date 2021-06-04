@@ -185,6 +185,7 @@ class DSprites(DisentangledDataset):
         'color': np.array([1.])}
 
     def __init__(self,
+                 train: Optional[bool] = True,
                  root: Optional[str] = os.path.join(DIR, '../data/dsprites/'),
                  **kwargs: Optional[Any]):
         super().__init__(root, [transforms.ToTensor()], **kwargs)
@@ -247,6 +248,7 @@ class CelebA(DisentangledDataset):
     background_color = COLOUR_WHITE
 
     def __init__(self,
+                 train: Optional[bool] = True,
                  root: Optional[str] = os.path.join(DIR, '../data/celeba'),
                  **kwargs: Optional[Any]):
         super().__init__(root, [transforms.ToTensor()], **kwargs)
